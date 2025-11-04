@@ -37,6 +37,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Skip caching for unsupported schemes (chrome-extension, chrome, etc.)
+  const url = new URL(event.request.url);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((response) => {
       if (response) {
@@ -52,11 +58,23 @@ self.addEventListener('fetch', (event) => {
         // Clone the response
         const responseToCache = response.clone();
 
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
+        // Only cache if the request is for the same origin
+        if (url.origin === self.location.origin) {
+          caches.open(CACHE_NAME).then((cache) => {
+            try {
+              cache.put(event.request, responseToCache);
+            } catch (error) {
+              // Silently fail if caching fails (e.g., unsupported scheme)
+              console.warn('Failed to cache request:', event.request.url, error);
+            }
+          });
+        }
 
         return response;
+      }).catch((error) => {
+        // If fetch fails, return the error
+        console.error('Fetch failed:', event.request.url, error);
+        throw error;
       });
     })
   );
