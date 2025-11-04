@@ -1,8 +1,167 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { comparisonToCSV } from '../utils/xmlParser';
+
+// Component to render hierarchical field list
+function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type }) {
+  const toggleExpand = (path) => {
+    const newExpanded = new Set(expandedPaths);
+    if (newExpanded.has(path)) {
+      newExpanded.delete(path);
+    } else {
+      newExpanded.add(path);
+    }
+    setExpandedPaths(newExpanded);
+  };
+
+  // Build a tree structure from flat field list
+  const fieldTree = useMemo(() => {
+    const tree = [];
+    const fieldMap = new Map();
+    const rootNodes = new Set();
+
+    // First pass: create all nodes and identify root nodes
+    // Preserve original order from fields array
+    fields.forEach(field => {
+      const node = {
+        ...field,
+        children: []
+      };
+      fieldMap.set(field.path, node);
+      rootNodes.add(field.path);
+    });
+
+    // Second pass: build parent-child relationships
+    // Process fields in their original order to maintain XML structure
+    fields.forEach(field => {
+      const node = fieldMap.get(field.path);
+      // Find parent path (everything before the last " > ")
+      const lastSeparator = field.path.lastIndexOf(' > ');
+      if (lastSeparator !== -1) {
+        const parentPath = field.path.substring(0, lastSeparator);
+        const parent = fieldMap.get(parentPath);
+        if (parent) {
+          // Parent exists in this list, add as child and remove from root
+          parent.children.push(node);
+          rootNodes.delete(field.path);
+        }
+        // If parent doesn't exist, keep as root node
+      }
+      // If no separator, it's already a root node
+    });
+
+    // Build tree from root nodes - maintain order using orderIndex
+    const rootArray = Array.from(rootNodes).map(path => fieldMap.get(path));
+    rootArray.sort((a, b) => {
+      const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
+      const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
+      return orderA - orderB;
+    });
+    tree.push(...rootArray);
+
+    // Sort function for nodes - maintain XML order using orderIndex
+    // orderIndex is relative to parent, so we compare it for siblings (same parentPath)
+    const sortNodes = (nodes) => {
+      return nodes.sort((a, b) => {
+        // If they have the same parent, sort by orderIndex (XML order)
+        if (a.parentPath === b.parentPath) {
+          const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
+          const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
+          if (orderA !== orderB) return orderA - orderB;
+        }
+        // If different parents or same orderIndex, sort by depth first
+        if (a.depth !== b.depth) return a.depth - b.depth;
+        // Final fallback: path comparison
+        return a.path.localeCompare(b.path);
+      }).map(node => {
+        if (node.children.length > 0) {
+          node.children = sortNodes(node.children);
+        }
+        return node;
+      });
+    };
+
+    return sortNodes(tree);
+  }, [fields]);
+
+  const renderField = (field, depth = 0) => {
+    const isExpanded = expandedPaths.has(field.path);
+    const hasChildren = field.children && field.children.length > 0;
+    const indent = depth * 24; // Code-like indentation (24px per level)
+
+    return (
+      <React.Fragment key={field.path}>
+        <li className={`field-list-item ${type}`} style={{ paddingLeft: `${indent}px` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            {hasChildren && (
+              <button
+                onClick={() => toggleExpand(field.path)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  padding: '0.25rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  color: 'var(--text-secondary)',
+                  transition: 'color 0.2s',
+                }}
+                onMouseEnter={(e) => e.target.style.color = 'var(--primary-color)'}
+                onMouseLeave={(e) => e.target.style.color = 'var(--text-secondary)'}
+                title={isExpanded ? 'Collapse' : 'Expand'}
+              >
+                <span style={{ fontSize: '0.75rem', userSelect: 'none', width: '12px', display: 'inline-block' }}>
+                  {isExpanded ? '▼' : '▶'}
+                </span>
+              </button>
+            )}
+            {!hasChildren && <span style={{ width: '1.75rem', display: 'inline-block' }} />}
+            <code>{field.name}</code>
+            {field.structuralDifference && (
+              <span 
+                style={{ 
+                  fontSize: '0.75rem', 
+                  color: 'var(--warning-color)', 
+                  fontWeight: 'bold',
+                  marginLeft: '0.25rem',
+                  cursor: 'help'
+                }}
+                title={(() => {
+                  const parts = [];
+                  parts.push('Structural difference: This field exists in all files but at different paths.');
+                  if (field.alternativePathsWithFiles && field.alternativePathsWithFiles.length > 0) {
+                    parts.push('\n\nAlternative paths:');
+                    field.alternativePathsWithFiles.forEach(({ path, files }) => {
+                      parts.push(`\n  • ${path} (in: ${files.join(', ')})`);
+                    });
+                  }
+                  return parts.join('');
+                })()}
+              >
+                ⚠️
+              </span>
+            )}
+            {field.path !== field.name && (
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
+                ({field.path})
+              </span>
+            )}
+          </div>
+        </li>
+        {hasChildren && isExpanded && field.children.map(child => renderField(child, depth + 1))}
+      </React.Fragment>
+    );
+  };
+
+  return (
+    <ul className="field-list">
+      {fieldTree.map(field => renderField(field, 0))}
+    </ul>
+  );
+}
 
 function ComparisonView({ comparison, files }) {
   const [activeTab, setActiveTab] = useState('common');
+  const [expandedPaths, setExpandedPaths] = useState(new Set());
 
   const handleExportComparison = () => {
     const csv = comparisonToCSV(comparison);
@@ -53,19 +212,39 @@ function ComparisonView({ comparison, files }) {
       <div style={{ padding: '1.5rem' }}>
         {activeTab === 'common' && (
           <div>
-            <h3 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
-              Fields present in all {files.length} files
-            </h3>
+            <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+              <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>
+                Fields present in all {files.length} files
+              </h3>
+              <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                (Structure shown from: {files[0]?.filename})
+              </span>
+            </div>
             {comparison.commonFields.length === 0 ? (
               <p style={{ color: 'var(--text-secondary)' }}>No common fields found</p>
             ) : (
-              <ul className="field-list">
-                {comparison.commonFields.map((field, index) => (
-                  <li key={index} className="field-list-item common">
-                    <code>{field}</code>
-                  </li>
-                ))}
-              </ul>
+              <>
+                {Object.keys(comparison.structuralDifferences || {}).length > 0 && (
+                  <div style={{ 
+                    padding: '0.75rem', 
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)', 
+                    border: '1px solid var(--warning-color)', 
+                    borderRadius: '0.5rem', 
+                    marginBottom: '1rem',
+                    fontSize: '0.875rem'
+                  }}>
+                    <strong style={{ color: 'var(--warning-color)' }}>⚠️ Note:</strong> Some fields have structural differences. 
+                    Fields marked with ⚠️ exist in all files but at different paths/positions. 
+                    Hover over the warning icon to see alternative paths.
+                  </div>
+                )}
+                <HierarchicalFieldList
+                  fields={comparison.commonFields}
+                  expandedPaths={expandedPaths}
+                  setExpandedPaths={setExpandedPaths}
+                  type="common"
+                />
+              </>
             )}
           </div>
         )}
@@ -127,7 +306,7 @@ function ComparisonView({ comparison, files }) {
         {activeTab === 'unique' && (
           <div>
             <h3 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
-              Fields unique to each file
+              Fields unique to each file (not present in any other file)
             </h3>
             <div className="comparison-container">
               {files.map((file) => (
@@ -140,13 +319,12 @@ function ComparisonView({ comparison, files }) {
                       No unique fields
                     </p>
                   ) : (
-                    <ul className="field-list">
-                      {comparison.uniqueFields[file.filename].map((field, index) => (
-                        <li key={index} className="field-list-item unique">
-                          <code>{field}</code>
-                        </li>
-                      ))}
-                    </ul>
+                    <HierarchicalFieldList
+                      fields={comparison.uniqueFields[file.filename]}
+                      expandedPaths={expandedPaths}
+                      setExpandedPaths={setExpandedPaths}
+                      type="unique"
+                    />
                   )}
                 </div>
               ))}

@@ -83,6 +83,7 @@ export function parseXML(xmlString) {
 export function extractFields(xmlDoc) {
   const fields = [];
   const fieldMap = new Map();
+  const parentOrderCounters = new Map(); // Track order counter per parent path
 
   function traverseNode(node, depth = 0, parentPath = '') {
     if (node.nodeType === Node.ELEMENT_NODE) {
@@ -93,6 +94,13 @@ export function extractFields(xmlDoc) {
       const fieldKey = `${nodeName}|${depth}`;
 
       if (!fieldMap.has(fieldKey)) {
+        // Get or create order counter for this parent
+        if (!parentOrderCounters.has(parentPath)) {
+          parentOrderCounters.set(parentPath, 0);
+        }
+        const orderIndex = parentOrderCounters.get(parentPath);
+        parentOrderCounters.set(parentPath, orderIndex + 1);
+        
         const field = {
           name: nodeName,
           depth: depth,
@@ -101,9 +109,11 @@ export function extractFields(xmlDoc) {
           hasChildren: node.children.length > 0,
           childCount: node.children.length,
           hasText: node.textContent && node.textContent.trim().length > 0,
-          textContent: node.textContent ? node.textContent.trim().substring(0, 100) : '',
+          textContent: node.textContent ? node.textContent.trim() : '',
           attributes: Array.from(node.attributes || []).map(attr => attr.name),
           occurrences: 1,
+          orderIndex: orderIndex, // Track order of first appearance under this parent
+          parentPath: parentPath, // Store parent path for ordering children
         };
 
         fieldMap.set(fieldKey, field);
@@ -114,7 +124,7 @@ export function extractFields(xmlDoc) {
         existingField.occurrences += 1;
       }
 
-      // Traverse children
+      // Traverse children in order
       for (let child of node.children) {
         traverseNode(child, depth + 1, path);
       }
@@ -123,9 +133,14 @@ export function extractFields(xmlDoc) {
 
   traverseNode(xmlDoc.documentElement);
 
-  // Sort fields by depth and name
+  // Sort fields by depth, then by order index (maintaining XML order)
   return fields.sort((a, b) => {
     if (a.depth !== b.depth) return a.depth - b.depth;
+    // If same depth and same parent, sort by order index
+    if (a.parentPath === b.parentPath) {
+      return (a.orderIndex || 0) - (b.orderIndex || 0);
+    }
+    // Otherwise maintain alphabetical for different parents at same depth
     return a.name.localeCompare(b.name);
   });
 }
@@ -186,20 +201,139 @@ export function compareFields(fileDataArray) {
     });
   });
 
-  // Find common fields (present in all files)
-  const commonFields = Array.from(allFieldNames).filter(fieldName => {
+  // Find common fields (present in all files) - using paths to ensure exact hierarchy match
+  // First, get all unique field paths across all files
+  const allFieldPaths = new Set();
+  fileDataArray.forEach(fileData => {
+    fileData.fields.forEach(field => {
+      allFieldPaths.add(field.path);
+    });
+  });
+
+  // Find common field paths (paths that exist in ALL files with same structure)
+  const commonFieldPaths = Array.from(allFieldPaths).filter(fieldPath => {
+    return fileDataArray.every(fileData =>
+      fileData.fields.some(f => f.path === fieldPath)
+    );
+  });
+
+  // Track structural differences: fields with same name but different paths
+  const structuralDifferences = new Map(); // fieldName -> { paths: Set, files: Map }
+  
+  // Build a map of field names to their paths in each file
+  const fieldNameToPaths = new Map();
+  allFieldNames.forEach(fieldName => {
+    const pathsInFiles = new Map();
+    fileDataArray.forEach(fileData => {
+      const matchingFields = fileData.fields.filter(f => f.name === fieldName);
+      if (matchingFields.length > 0) {
+        pathsInFiles.set(fileData.filename, matchingFields.map(f => f.path));
+      }
+    });
+    
+    // Check if this field name appears in all files
+    if (pathsInFiles.size === fileDataArray.length) {
+      // Check if all files have the same path(s) for this field
+      const allPaths = new Set();
+      pathsInFiles.forEach(paths => {
+        paths.forEach(path => allPaths.add(path));
+      });
+      
+      // If field exists in all files but has different paths, it's a structural difference
+      if (allPaths.size > 1) {
+        structuralDifferences.set(fieldName, {
+          paths: Array.from(allPaths),
+          files: pathsInFiles
+        });
+      }
+    }
+    
+    fieldNameToPaths.set(fieldName, pathsInFiles);
+  });
+
+  // Build common fields using reference file structure
+  // Include fields that exist in all files (by name), using reference file structure for display
+  const referenceFile = fileDataArray[0];
+  
+  // First, get all field names that exist in ALL files
+  const commonFieldNames = Array.from(allFieldNames).filter(fieldName => {
     return fileDataArray.every(fileData =>
       fileData.fields.some(f => f.name === fieldName)
     );
   });
 
-  // Find unique fields for each file
+  // Build common fields from reference file structure
+  // Include all fields from reference file that have the same name in all files
+  const commonFields = referenceFile.fields
+    .filter(field => commonFieldNames.includes(field.name))
+    .map(field => {
+      // Check if this field has structural differences (same name, different paths)
+      const hasStructuralDiff = structuralDifferences.has(field.name);
+      const structuralInfo = hasStructuralDiff ? structuralDifferences.get(field.name) : null;
+      
+      // Verify this exact path exists in all files
+      const pathExistsInAllFiles = fileDataArray.every(fileData =>
+        fileData.fields.some(f => f.path === field.path)
+      );
+      
+      // Build alternative paths with file information
+      let alternativePathsWithFiles = [];
+      if (structuralInfo) {
+        const currentPath = field.path;
+        structuralInfo.paths.forEach(altPath => {
+          if (altPath !== currentPath) {
+            // Find which files have this alternative path
+            const filesWithPath = [];
+            structuralInfo.files.forEach((paths, filename) => {
+              if (paths.includes(altPath)) {
+                filesWithPath.push(filename);
+              }
+            });
+            alternativePathsWithFiles.push({
+              path: altPath,
+              files: filesWithPath
+            });
+          }
+        });
+      }
+      
+      return {
+        name: field.name,
+        path: field.path,
+        depth: field.depth,
+        hasChildren: field.hasChildren,
+        childCount: field.childCount,
+        structuralDifference: hasStructuralDiff,
+        pathExistsInAllFiles: pathExistsInAllFiles,
+        alternativePaths: structuralInfo ? structuralInfo.paths.filter(p => p !== field.path) : [],
+        alternativePathsWithFiles: alternativePathsWithFiles,
+        orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
+        parentPath: field.parentPath || ''
+      };
+    });
+  // Don't sort here - preserve the original XML order from reference file
+
+  // Find unique fields for each file (fields that exist ONLY in that file, not in any other file)
   const uniqueFields = {};
   fileDataArray.forEach(fileData => {
+    const fileFieldPaths = new Set(fileData.fields.map(f => f.path));
     const fileFieldNames = new Set(fileData.fields.map(f => f.name));
-    uniqueFields[fileData.filename] = Array.from(allFieldNames).filter(
-      fieldName => !fileFieldNames.has(fieldName)
-    );
+    
+    // Find fields that are unique to this file (present in this file but not in any other file)
+    const uniqueToThisFile = fileData.fields.filter(field => {
+      // Check if this field path exists in any other file
+      const existsInOtherFile = fileDataArray.some(otherFile => {
+        if (otherFile.filename === fileData.filename) return false; // Skip self
+        return otherFile.fields.some(f => f.path === field.path);
+      });
+      return !existsInOtherFile;
+    });
+    
+    uniqueFields[fileData.filename] = uniqueToThisFile.map(f => ({
+      name: f.name,
+      path: f.path,
+      depth: f.depth
+    }));
   });
 
   // Detailed field differences
@@ -233,6 +367,7 @@ export function compareFields(fileDataArray) {
     commonFields,
     uniqueFields,
     fieldDifferences,
+    structuralDifferences: Object.fromEntries(structuralDifferences),
     totalUniqueFields: allFieldNames.size,
   };
 }
@@ -288,9 +423,25 @@ export function comparisonToCSV(comparison) {
 
   // Common fields section
   csvContent += 'Common Fields (Present in All Files)\n';
-  csvContent += 'Field Name\n';
+  csvContent += 'Field Name,Path,Depth,Structural Difference,Alternative Paths\n';
   comparison.commonFields.forEach(field => {
-    csvContent += `${field}\n`;
+    const fieldName = typeof field === 'string' ? field : field.name;
+    const fieldPath = typeof field === 'string' ? field : field.path;
+    const fieldDepth = typeof field === 'string' ? 0 : field.depth;
+    const hasStructuralDiff = typeof field === 'object' && field.structuralDifference ? 'Yes' : 'No';
+    const altPaths = typeof field === 'object' && field.alternativePaths ? field.alternativePaths.join('; ') : '';
+    csvContent += `"${fieldName}","${fieldPath}",${fieldDepth},"${hasStructuralDiff}","${altPaths}"\n`;
+  });
+
+  csvContent += '\n\nUnique Fields\n';
+  csvContent += 'File Name,Field Name,Path,Depth\n';
+  Object.entries(comparison.uniqueFields).forEach(([filename, fields]) => {
+    fields.forEach(field => {
+      const fieldName = typeof field === 'string' ? field : field.name;
+      const fieldPath = typeof field === 'string' ? field : field.path;
+      const fieldDepth = typeof field === 'string' ? 0 : field.depth;
+      csvContent += `"${filename}","${fieldName}","${fieldPath}",${fieldDepth}\n`;
+    });
   });
 
   csvContent += '\n\nField Differences\n';
