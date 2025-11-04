@@ -1,0 +1,78 @@
+xml
+<?xml version="1.0" encoding="utf-8"?>
+<ns0:RefOrderDetail xmlns:ns0="WE.Outbound.WorkorderNotification.Create">
+ <ns0:WorkOrderNumber/>
+ <ns0:InvoiceCost/>
+ <ns0:InvoiceDate/>
+ <ns0:Status/>
+ <ns0:PMActivityType>WEO</ns0:PMActivityType>
+ <ns0:GISID>33718</ns0:GISID>
+ <ns0:AssetNo/>
+ <ns0:Operations>
+  <ns0:Operation>
+   <ns0:OperationCode>9407C</ns0:OperationCode>
+   <ns0:Number>1</ns0:Number>
+   <ns0:ServiceProviderRef1/>
+   <ns0:ServiceProviderRef2/>
+   <ns0:SafetyRisk>2</ns0:SafetyRisk>
+   <ns0:ReliabilityRisk>3</ns0:ReliabilityRisk>
+   <ns0:MiscCost>4500</ns0:MiscCost>
+  </ns0:Operation>
+ </ns0:Operations>
+ <ns0:Notifications>
+  <ns0:Notification>
+   <ns0:DateFound>04.12.2024</ns0:DateFound>
+   <ns0:User>Cairns MASON</ns0:User>
+   <ns0:Coding>PMIN</ns0:Coding>
+   <ns0:Priority>5</ns0:Priority>
+   <ns0:PriorityDesc>N5</ns0:PriorityDesc>
+   <ns0:SubjectText>Head split</ns0:SubjectText>
+   <ns0:Items>
+    <ns0:Item>
+     <ns0:ObjectPart>POLE</ns0:ObjectPart>
+     <ns0:DamageCode>CRAC</ns0:DamageCode>
+     <ns0:DamageText>Head split</ns0:DamageText>
+     <ns0:CauseCode>END</ns0:CauseCode>
+     <ns0:CauseText>Ageing</ns0:CauseText>
+     <ns0:Characteristics>
+      <ns0:Characteristic>
+       <ns0:Name>PUBLIC_SAFETY</ns0:Name>
+       <ns0:Value>Y</ns0:Value>
+      </ns0:Characteristic>
+      <ns0:Characteristic>
+       <ns0:Name>REPAIR_COMPLETED</ns0:Name>
+       <ns0:Value>N</ns0:Value>
+      </ns0:Characteristic>
+      <ns0:Characteristic>
+       <ns0:Name>INSPECTOR</ns0:Name>
+       <ns0:Value>Cairns MASON</ns0:Value>
+      </ns0:Characteristic>
+     </ns0:Characteristics>
+     <ns0:Tasks>
+      <ns0:Task>
+       <ns0:TaskCode>9407C</ns0:TaskCode>
+       <ns0:TaskText>Head split -  Non-Reg Yellow Tag</ns0:TaskText>
+       <ns0:CompletedBy/>
+       <ns0:CompletedOn/>
+      </ns0:Task>
+     </ns0:Tasks>
+    </ns0:Item>
+   </ns0:Items>
+   <ns0:Activities/>
+   <ns0:Attachments>
+    <ns0:Attachment>
+     <ns0:FileName>7f05480c-6fb3-4aa0-bf07-9401895a5945.jpg</ns0:FileName>
+     <ns0:URL>https://web.fulcrumapp.com/photos/7f05480c-6fb3-4aa0-bf07-9401895a5945</ns0:URL>
+    </ns0:Attachment>
+    <ns0:Attachment>
+     <ns0:FileName>81f330b8-00be-4259-8fdf-af803b5a83ea.jpg</ns0:FileName>
+     <ns0:URL>https://web.fulcrumapp.com/photos/81f330b8-00be-4259-8fdf-af803b5a83ea</ns0:URL>
+    </ns0:Attachment>
+    <ns0:Attachment>
+     <ns0:FileName>388c184c-b903-4405-87f6-646577203bb8.jpg</ns0:FileName>
+     <ns0:URL>https://web.fulcrumapp.com/photos/388c184c-b903-4405-87f6-646577203bb8</ns0:URL>
+    </ns0:Attachment>
+   </ns0:Attachments>
+  </ns0:Notification>
+ </ns0:Notifications>
+</ns0:RefOrderDetail>
