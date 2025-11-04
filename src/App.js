@@ -6,6 +6,42 @@ import ComparisonView from './components/ComparisonView';
 import Statistics from './components/Statistics';
 import { parseXML, extractFields, createFieldTree, compareFields } from './utils/xmlParser';
 
+// Tooltip component for file names
+const FileNameTooltip = ({ text, children }) => {
+  const [isVisible, setIsVisible] = useState(false);
+  const [tooltipStyle, setTooltipStyle] = useState({});
+  const wrapperRef = React.useRef(null);
+
+  const handleMouseEnter = () => {
+    if (wrapperRef.current) {
+      const rect = wrapperRef.current.getBoundingClientRect();
+      setTooltipStyle({
+        position: 'fixed',
+        top: `${rect.top - 8}px`,
+        left: `${rect.left}px`,
+        transform: 'translateY(-100%)',
+      });
+    }
+    setIsVisible(true);
+  };
+
+  return (
+    <span
+      ref={wrapperRef}
+      className="file-name-tooltip-wrapper"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={() => setIsVisible(false)}
+    >
+      {children}
+      {isVisible && (
+        <span className="file-name-tooltip" style={tooltipStyle}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+};
+
 function App() {
   const [files, setFiles] = useState([]);
   const [activeTab, setActiveTab] = useState('single');
@@ -73,7 +109,10 @@ function App() {
       <header className="app-header">
         <div className="header-content">
           <h1>XML Field Analyzer</h1>
-          <p className="subtitle">Analyze, compare, and export XML structures</p>
+          <div className="header-subtitle-row">
+            <p className="subtitle">Analyze, compare, and export XML structures</p>
+            <p className="local-processing">🔒 All processing is done locally on your device</p>
+          </div>
         </div>
       </header>
 
@@ -93,7 +132,9 @@ function App() {
                     className={`file-item ${selectedFileIndex === index ? 'active' : ''}`}
                     onClick={() => setSelectedFileIndex(index)}
                   >
-                    <span className="file-name">{file.filename}</span>
+                    <FileNameTooltip text={file.filename}>
+                      <span className="file-name">{file.filename}</span>
+                    </FileNameTooltip>
                     <span className="file-fields">{file.fields.length} fields</span>
                     <button
                       className="remove-btn"
@@ -152,6 +193,17 @@ function App() {
           )}
         </main>
       </div>
+
+      <footer className="app-footer">
+        <div className="footer-content">
+          <p className="footer-text">
+            Another project created with 🧡 by{' '}
+            <a href="https://weihong.dev" target="_blank" rel="noopener noreferrer" className="footer-link">
+              Wei Hong
+            </a>
+          </p>
+        </div>
+      </footer>
     </div>
   );
 }
