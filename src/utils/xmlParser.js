@@ -4,14 +4,66 @@
  */
 
 /**
+ * Check if content contains XML elements
+ * @param {string} content - The content to check
+ * @returns {boolean} True if XML content is detected
+ */
+export function hasXMLContent(content) {
+  if (!content || typeof content !== 'string') {
+    return false;
+  }
+
+  // Check for XML declaration
+  if (content.indexOf('<?xml') !== -1) {
+    return true;
+  }
+
+  // Check for valid XML tag start (< followed by letter, underscore, or colon)
+  const tagStartRegex = /<[a-zA-Z_:]/;
+  return tagStartRegex.test(content);
+}
+
+/**
+ * Extract XML content from a string that may contain leading non-XML text
+ * Looks for XML declaration (<?xml) or first valid XML tag start (<)
+ * @param {string} content - The raw content that may contain leading text
+ * @returns {string} Clean XML content starting from the XML declaration or first tag
+ */
+export function extractXMLContent(content) {
+  if (!content || typeof content !== 'string') {
+    return content;
+  }
+
+  // First, try to find the XML declaration (<?xml)
+  const xmlDeclarationIndex = content.indexOf('<?xml');
+  if (xmlDeclarationIndex !== -1) {
+    return content.substring(xmlDeclarationIndex);
+  }
+
+  // If no XML declaration, look for the first '<' character that starts a valid tag
+  // A valid XML tag starts with '<' followed by a letter, underscore, or colon
+  const tagStartRegex = /<[a-zA-Z_:]/;
+  const match = content.match(tagStartRegex);
+  if (match && match.index !== undefined) {
+    return content.substring(match.index);
+  }
+
+  // If we can't find a valid XML start, return the original content
+  // (let the parser handle the error)
+  return content;
+}
+
+/**
  * Parse XML string and extract field information
- * @param {string} xmlString - The XML content as a string
+ * @param {string} xmlString - The XML content as a string (may contain leading non-XML text)
  * @returns {Object} Parsed XML data with field information
  */
 export function parseXML(xmlString) {
   try {
+    // Extract clean XML content, ignoring any leading non-XML text
+    const cleanXMLString = extractXMLContent(xmlString);
     const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
+    const xmlDoc = parser.parseFromString(cleanXMLString, 'text/xml');
 
     if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
       throw new Error('Invalid XML format');

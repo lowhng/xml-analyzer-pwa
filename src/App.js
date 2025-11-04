@@ -4,7 +4,7 @@ import FileUpload from './components/FileUpload';
 import FieldsViewer from './components/FieldsViewer';
 import ComparisonView from './components/ComparisonView';
 import Statistics from './components/Statistics';
-import { parseXML, extractFields, createFieldTree, compareFields } from './utils/xmlParser';
+import { parseXML, extractFields, createFieldTree, compareFields, hasXMLContent } from './utils/xmlParser';
 
 // Tooltip component for file names
 const FileNameTooltip = ({ text, children }) => {
@@ -60,37 +60,57 @@ function App() {
     const updatedFiles = [...files];
 
     newFiles.forEach(file => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const xmlString = e.target.result;
-          const xmlDoc = parseXML(xmlString);
-          const fields = extractFields(xmlDoc);
-          const tree = createFieldTree(xmlDoc);
-
-          const fileData = {
-            id: Date.now() + Math.random(),
-            filename: file.name,
-            xmlString: xmlString,
-            xmlDoc: xmlDoc,
-            fields: fields,
-            tree: tree,
-            stats: {
-              totalFields: fields.length,
-              uniqueFieldNames: new Set(fields.map(f => f.name)).size,
-              maxDepth: Math.max(...fields.map(f => f.depth), 0),
-              nestedFields: fields.filter(f => f.isNested).length,
-            },
-          };
-
-          updatedFiles.push(fileData);
-          setFiles([...updatedFiles]);
-        } catch (error) {
-          alert(`Error parsing ${file.name}: ${error.message}`);
-        }
-      };
-      reader.readAsText(file);
+      // Check if it's a .txt file and validate it contains XML
+      if (file.name.endsWith('.txt')) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const content = e.target.result;
+          // Check if the TXT file contains XML content
+          if (!hasXMLContent(content)) {
+            alert(`${file.name} does not contain any XML content. Please upload a file with XML elements.`);
+            return;
+          }
+          // Continue with XML processing
+          processXMLFile(content, file, updatedFiles);
+        };
+        reader.readAsText(file);
+      } else {
+        // For .xml files, process directly
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          processXMLFile(e.target.result, file, updatedFiles);
+        };
+        reader.readAsText(file);
+      }
     });
+  };
+
+  const processXMLFile = (xmlString, file, updatedFiles) => {
+    try {
+      const xmlDoc = parseXML(xmlString);
+      const fields = extractFields(xmlDoc);
+      const tree = createFieldTree(xmlDoc);
+
+      const fileData = {
+        id: Date.now() + Math.random(),
+        filename: file.name,
+        xmlString: xmlString,
+        xmlDoc: xmlDoc,
+        fields: fields,
+        tree: tree,
+        stats: {
+          totalFields: fields.length,
+          uniqueFieldNames: new Set(fields.map(f => f.name)).size,
+          maxDepth: Math.max(...fields.map(f => f.depth), 0),
+          nestedFields: fields.filter(f => f.isNested).length,
+        },
+      };
+
+      updatedFiles.push(fileData);
+      setFiles([...updatedFiles]);
+    } catch (error) {
+      alert(`Error parsing ${file.name}: ${error.message}`);
+    }
   };
 
   const handleRemoveFile = (index) => {
@@ -158,7 +178,7 @@ function App() {
             <div className="empty-state">
               <div className="empty-icon">📄</div>
               <h2>No XML Files Loaded</h2>
-              <p>Upload one or more XML files to get started</p>
+              <p>Upload one or more XML or TXT files to get started</p>
             </div>
           ) : (
             <>

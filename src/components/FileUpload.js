@@ -22,13 +22,15 @@ function FileUpload({ onFilesAdded }) {
     setIsDragOver(false);
 
     const files = Array.from(e.dataTransfer.files).filter(
-      file => file.type === 'text/xml' || file.name.endsWith('.xml')
+      file => file.type === 'text/xml' || 
+              file.name.endsWith('.xml') || 
+              file.name.endsWith('.txt')
     );
 
     if (files.length > 0) {
       onFilesAdded(files);
     } else {
-      alert('Please drop XML files only');
+      alert('Please drop XML or TXT files only');
     }
   };
 
@@ -54,13 +56,13 @@ function FileUpload({ onFilesAdded }) {
       >
         <div className="upload-icon">📤</div>
         <p className="upload-text">
-          Drag and drop XML files here or click to select
+          Drag and drop XML or TXT files here or click to select
         </p>
         <input
           ref={inputRef}
           type="file"
           multiple
-          accept=".xml,text/xml"
+          accept=".xml,.txt,text/xml,text/plain"
           onChange={handleFileChange}
           className="upload-input"
         />
