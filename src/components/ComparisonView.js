@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
-import { comparisonToCSV } from '../utils/xmlParser';
+import { comparisonToExcel } from '../utils/xmlParser';
 
 // Component to render hierarchical field list
-function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type }) {
+function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles }) {
   const toggleExpand = (path) => {
     const newExpanded = new Set(expandedPaths);
     if (newExpanded.has(path)) {
@@ -116,6 +116,25 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type }
             )}
             {!hasChildren && <span style={{ width: '1.75rem', display: 'inline-block' }} />}
             <code>{field.name}</code>
+            {field.presentInFiles && totalFiles && field.presentInFiles.length < totalFiles && (
+              <span 
+                style={{ 
+                  fontSize: '0.75rem', 
+                  fontWeight: '600',
+                  color: 'var(--primary-color)', 
+                  backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                  padding: '0.125rem 0.375rem',
+                  borderRadius: '0.25rem',
+                  marginLeft: '0.5rem',
+                  cursor: 'help',
+                  border: '1px solid rgba(59, 130, 246, 0.2)',
+                  display: 'inline-block'
+                }}
+                title={`Present in: ${field.presentInFiles.join(', ')}`}
+              >
+                {field.presentInFiles.length}/{totalFiles} files
+              </span>
+            )}
             {field.structuralDifference && (
               <span 
                 style={{ 
@@ -163,13 +182,111 @@ function ComparisonView({ comparison, files }) {
   const [activeTab, setActiveTab] = useState('common');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
 
+  // Merge all fields from all files, grouping by similar structure
+  // For each parent path, show all unique field names from all files
+  const mergedFields = useMemo(() => {
+    if (files.length === 0) return [];
+
+    // Track all unique field names under each parent path
+    // parentPath -> Map of fieldName -> { field info, presentInFiles }
+    const parentFieldMap = new Map();
+    
+    // First pass: collect all fields grouped by parent path and field name
+    files.forEach(file => {
+      file.fields.forEach(field => {
+        const parentPath = field.parentPath || '';
+        const fieldName = field.name;
+        
+        if (!parentFieldMap.has(parentPath)) {
+          parentFieldMap.set(parentPath, new Map());
+        }
+        
+        const fieldsAtParent = parentFieldMap.get(parentPath);
+        if (!fieldsAtParent.has(fieldName)) {
+          // First time seeing this field name under this parent
+          fieldsAtParent.set(fieldName, {
+            name: fieldName,
+            path: field.path,
+            depth: field.depth,
+            parentPath: parentPath,
+            hasChildren: field.hasChildren,
+            childCount: field.childCount,
+            orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
+            presentInFiles: [file.filename],
+            isNested: field.isNested,
+            hasText: field.hasText,
+            textContent: field.textContent,
+            attributes: field.attributes,
+            occurrences: field.occurrences,
+          });
+        } else {
+          // Field name already exists under this parent, just add to presentInFiles
+          const existing = fieldsAtParent.get(fieldName);
+          if (!existing.presentInFiles.includes(file.filename)) {
+            existing.presentInFiles.push(file.filename);
+          }
+          // Update hasChildren if this file has children (field has children if any file has children)
+          if (field.hasChildren) {
+            existing.hasChildren = true;
+          }
+        }
+      });
+    });
+
+    // Second pass: build the merged field list maintaining structure
+    // Use reference file (first file) to determine the order and structure
+    const merged = [];
+    const processedFieldKeys = new Set(); // Track parentPath + fieldName combinations
+    
+    // Build a function to recursively process fields
+    const processFieldsAtDepth = (depth, parentPath) => {
+      const fieldsAtParent = parentFieldMap.get(parentPath) || new Map();
+      const fieldEntries = Array.from(fieldsAtParent.entries());
+      
+      // Sort by order index from reference file if available
+      fieldEntries.sort(([nameA, fieldA], [nameB, fieldB]) => {
+        // Try to get order from reference file
+        const refFile = files[0];
+        const refFieldA = refFile.fields.find(f => 
+          f.name === nameA && (f.parentPath || '') === parentPath
+        );
+        const refFieldB = refFile.fields.find(f => 
+          f.name === nameB && (f.parentPath || '') === parentPath
+        );
+        
+        const orderA = refFieldA?.orderIndex ?? fieldA.orderIndex;
+        const orderB = refFieldB?.orderIndex ?? fieldB.orderIndex;
+        
+        if (orderA !== orderB) return orderA - orderB;
+        return nameA.localeCompare(nameB);
+      });
+      
+      fieldEntries.forEach(([fieldName, fieldInfo]) => {
+        const key = `${parentPath}|${fieldName}`;
+        if (!processedFieldKeys.has(key)) {
+          processedFieldKeys.add(key);
+          merged.push(fieldInfo);
+          
+          // Recursively process children if this field has children
+          if (fieldInfo.hasChildren) {
+            processFieldsAtDepth(depth + 1, fieldInfo.path);
+          }
+        }
+      });
+    };
+    
+    // Start processing from root (empty parent path)
+    processFieldsAtDepth(0, '');
+    
+    return merged;
+  }, [files]);
+
   const handleExportComparison = () => {
-    const csv = comparisonToCSV(comparison);
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const blob = comparisonToExcel(comparison, mergedFields);
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', 'comparison_report.csv');
+    link.setAttribute('download', 'comparison_report.xlsx');
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -181,11 +298,18 @@ function ComparisonView({ comparison, files }) {
       <div className="fields-header">
         <h2>File Comparison</h2>
         <button className="export-btn" onClick={handleExportComparison}>
-          📥 Export Report
+          📊 Export to Excel
         </button>
       </div>
 
       <div className="tabs" style={{ borderBottom: '1px solid var(--border-color)', padding: '0 1rem', margin: 0 }}>
+        <button
+          className={`tab ${activeTab === 'merged' ? 'active' : ''}`}
+          onClick={() => setActiveTab('merged')}
+          style={{ borderBottom: activeTab === 'merged' ? '3px solid var(--primary-color)' : 'none' }}
+        >
+          Merged View ({mergedFields.length})
+        </button>
         <button
           className={`tab ${activeTab === 'common' ? 'active' : ''}`}
           onClick={() => setActiveTab('common')}
@@ -210,6 +334,44 @@ function ComparisonView({ comparison, files }) {
       </div>
 
       <div style={{ padding: '1.5rem' }}>
+        {activeTab === 'merged' && (
+          <div>
+            <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+              <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>
+                Merged View: All Fields from All Files
+              </h3>
+              <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                Fields are grouped by similar structure. If fields share the same parent path, they are shown together.
+              </span>
+            </div>
+            {mergedFields.length === 0 ? (
+              <p style={{ color: 'var(--text-secondary)' }}>No fields to display</p>
+            ) : (
+              <>
+                <div style={{ 
+                  padding: '0.75rem', 
+                  backgroundColor: 'rgba(59, 130, 246, 0.1)', 
+                  border: '1px solid var(--primary-color)', 
+                  borderRadius: '0.5rem', 
+                  marginBottom: '1rem',
+                  fontSize: '0.875rem'
+                }}>
+                  <strong style={{ color: 'var(--primary-color)' }}>ℹ️ Note:</strong> This view shows all unique fields from all files, grouped by their parent structure. 
+                  Fields marked with (X/Y files) appear in X out of Y files. 
+                  Hover over the file count to see which files contain each field.
+                </div>
+                <HierarchicalFieldList
+                  fields={mergedFields}
+                  expandedPaths={expandedPaths}
+                  setExpandedPaths={setExpandedPaths}
+                  type="merged"
+                  totalFiles={files.length}
+                />
+              </>
+            )}
+          </div>
+        )}
+
         {activeTab === 'common' && (
           <div>
             <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>

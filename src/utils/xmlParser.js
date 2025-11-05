@@ -3,6 +3,8 @@
  * Handles parsing, field detection, nesting analysis, and comparison
  */
 
+import * as XLSX from 'xlsx';
+
 /**
  * Check if content contains XML elements
  * @param {string} content - The content to check
@@ -416,10 +418,26 @@ export function fieldsToCSV(fields, filename = 'fields.csv') {
 /**
  * Export comparison results to CSV
  * @param {Object} comparison - Comparison results from compareFields
+ * @param {Array} mergedFields - Optional merged fields array from all files
  * @returns {string} CSV content
  */
-export function comparisonToCSV(comparison) {
+export function comparisonToCSV(comparison, mergedFields = null) {
   let csvContent = 'Field Comparison Report\n\n';
+
+  // Merged View section (if provided)
+  if (mergedFields && mergedFields.length > 0) {
+    csvContent += 'Merged View (All Fields from All Files)\n';
+    csvContent += 'Field Name,Path,Depth,Present In Files,Files Count\n';
+    mergedFields.forEach(field => {
+      const fieldName = field.name || '';
+      const fieldPath = field.path || '';
+      const fieldDepth = field.depth !== undefined ? field.depth : 0;
+      const presentInFiles = field.presentInFiles ? field.presentInFiles.join('; ') : '';
+      const filesCount = field.presentInFiles ? `${field.presentInFiles.length}` : '0';
+      csvContent += `"${fieldName}","${fieldPath}",${fieldDepth},"${presentInFiles}","${filesCount}"\n`;
+    });
+    csvContent += '\n\n';
+  }
 
   // Common fields section
   csvContent += 'Common Fields (Present in All Files)\n';
@@ -452,6 +470,76 @@ export function comparisonToCSV(comparison) {
   });
 
   return csvContent;
+}
+
+/**
+ * Export comparison results to Excel with multiple sheets
+ * @param {Object} comparison - Comparison results from compareFields
+ * @param {Array} mergedFields - Optional merged fields array from all files
+ * @returns {Blob} Excel file blob
+ */
+export function comparisonToExcel(comparison, mergedFields = null) {
+  const workbook = XLSX.utils.book_new();
+
+  // Helper function to create a worksheet from array of objects
+  const createWorksheet = (data, sheetName) => {
+    if (!data || data.length === 0) {
+      // Create empty sheet with headers
+      const ws = XLSX.utils.aoa_to_sheet([[]]);
+      XLSX.utils.book_append_sheet(workbook, ws, sheetName);
+      return;
+    }
+    const ws = XLSX.utils.json_to_sheet(data);
+    XLSX.utils.book_append_sheet(workbook, ws, sheetName);
+  };
+
+  // Merged View sheet
+  if (mergedFields && mergedFields.length > 0) {
+    const mergedData = mergedFields.map(field => ({
+      'Field Name': field.name || '',
+      'Path': field.path || '',
+      'Depth': field.depth !== undefined ? field.depth : 0,
+      'Present In Files': field.presentInFiles ? field.presentInFiles.join('; ') : '',
+      'Files Count': field.presentInFiles ? field.presentInFiles.length : 0,
+    }));
+    createWorksheet(mergedData, 'Merged View');
+  }
+
+  // Common Fields sheet
+  const commonData = comparison.commonFields.map(field => ({
+    'Field Name': typeof field === 'string' ? field : field.name,
+    'Path': typeof field === 'string' ? field : field.path,
+    'Depth': typeof field === 'string' ? 0 : field.depth,
+    'Structural Difference': typeof field === 'object' && field.structuralDifference ? 'Yes' : 'No',
+    'Alternative Paths': typeof field === 'object' && field.alternativePaths ? field.alternativePaths.join('; ') : '',
+  }));
+  createWorksheet(commonData, 'Common Fields');
+
+  // Unique Fields sheet
+  const uniqueData = [];
+  Object.entries(comparison.uniqueFields).forEach(([filename, fields]) => {
+    fields.forEach(field => {
+      uniqueData.push({
+        'File Name': filename,
+        'Field Name': typeof field === 'string' ? field : field.name,
+        'Path': typeof field === 'string' ? field : field.path,
+        'Depth': typeof field === 'string' ? 0 : field.depth,
+      });
+    });
+  });
+  createWorksheet(uniqueData, 'Unique Fields');
+
+  // Field Differences sheet
+  const differencesData = Object.values(comparison.fieldDifferences).map(diff => ({
+    'Field Name': diff.fieldName,
+    'Present In': diff.presentIn.join('; '),
+    'Absent In': diff.absentIn.join('; '),
+  }));
+  createWorksheet(differencesData, 'Field Differences');
+
+  // Generate Excel file
+  const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+  return new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
 }
 
 /**
