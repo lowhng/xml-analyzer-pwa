@@ -301,13 +301,6 @@ export function compareFields(fileDataArray) {
     });
   });
 
-  // Find common field paths (paths that exist in ALL files with same structure)
-  const commonFieldPaths = Array.from(allFieldPaths).filter(fieldPath => {
-    return fileDataArray.every(fileData =>
-      fileData.fields.some(f => f.path === fieldPath)
-    );
-  });
-
   // Track structural differences: fields with same name but different paths
   const structuralDifferences = new Map(); // fieldName -> { paths: Set, files: Map }
   
@@ -407,9 +400,6 @@ export function compareFields(fileDataArray) {
   // Find unique fields for each file (fields that exist ONLY in that file, not in any other file)
   const uniqueFields = {};
   fileDataArray.forEach(fileData => {
-    const fileFieldPaths = new Set(fileData.fields.map(f => f.path));
-    const fileFieldNames = new Set(fileData.fields.map(f => f.name));
-    
     // Find fields that are unique to this file (present in this file but not in any other file)
     const uniqueToThisFile = fileData.fields.filter(field => {
       // Check if this field path exists in any other file
