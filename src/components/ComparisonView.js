@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { comparisonToExcel, compareFields } from '../utils/xmlParser';
 
 // Component to render hierarchical field list
@@ -181,14 +181,18 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
 function ComparisonView({ comparison, files }) {
   const [activeTab, setActiveTab] = useState('summary');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
+  const [summaryMode, setSummaryMode] = useState('hierarchical');
   const [summarySearch, setSummarySearch] = useState('');
   const [summaryVisibleCount, setSummaryVisibleCount] = useState(100);
+  const [expandedSummaryRowKey, setExpandedSummaryRowKey] = useState(null);
+  const [showAllSummaryValues, setShowAllSummaryValues] = useState({});
   const createEmptyFilter = () => ({
     id: `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     field: '',
     value: '',
     caseSensitive: false,
   });
+  const MAX_FILTERS = 5;
   const [filters, setFilters] = useState(() => [createEmptyFilter()]);
 
   const activeFilters = useMemo(() => {
@@ -285,18 +289,128 @@ function ComparisonView({ comparison, files }) {
     return activeComparison.aggregation;
   }, [activeComparison, comparisonFiles.length]);
 
+  const flatSummaryRows = useMemo(() => (
+    (aggregation.fieldNameSummary || []).map(item => ({
+      ...item,
+      uniqueKey: item.fieldName,
+      depth: item.depths && typeof item.depths.min === 'number' ? item.depths.min : 0,
+      parentPath: null,
+      path: item.samplePaths && item.samplePaths.length > 0 ? item.samplePaths[0] : item.fieldName,
+      pathSegments: item.samplePaths && item.samplePaths.length > 0
+        ? item.samplePaths[0].split(' > ')
+        : [item.fieldName],
+    }))
+  ), [aggregation.fieldNameSummary]);
+
+  const hierarchicalSummaryRows = useMemo(() => {
+    const pathSummary = aggregation.fieldPathSummary || [];
+    if (!pathSummary || pathSummary.length === 0) {
+      return [];
+    }
+
+    const totalFiles = aggregation.filesCount || 0;
+    const nodeMap = new Map();
+    const rootNodes = [];
+
+    pathSummary.forEach(item => {
+      const depthFromSegments = item.pathSegments && item.pathSegments.length > 0
+        ? item.pathSegments.length - 1
+        : (typeof item.depth === 'number' ? item.depth : 0);
+
+      const node = {
+        uniqueKey: item.path,
+        fieldName: item.fieldName,
+        depth: typeof item.depth === 'number' ? item.depth : depthFromSegments,
+        parentPath: item.parentPath || '',
+        filesWithField: item.filesWithPath,
+        filesMissingField: typeof item.filesMissingPath === 'number'
+          ? item.filesMissingPath
+          : Math.max(totalFiles - (item.filesWithPath || 0), 0),
+        presencePercent: item.presencePercent,
+        totalOccurrences: item.totalOccurrences,
+        averageOccurrencesPerFile: item.averageOccurrencesPerFile,
+        samplePaths: [item.path],
+        path: item.path,
+        pathSegments: item.pathSegments || item.path.split(' > '),
+        valueCounts: item.valueCounts || [],
+        uniqueValuesCount: item.uniqueValuesCount ?? (item.valueCounts ? item.valueCounts.length : 0),
+        hasChildren: !!item.hasChildren,
+        orderIndex: item.orderIndex,
+        children: [],
+      };
+
+      nodeMap.set(item.path, node);
+    });
+
+    nodeMap.forEach(node => {
+      if (node.parentPath && nodeMap.has(node.parentPath)) {
+        const parent = nodeMap.get(node.parentPath);
+        parent.children.push(node);
+        parent.hasChildren = true;
+      } else {
+        rootNodes.push(node);
+      }
+    });
+
+    const sortNodes = nodes => {
+      nodes.sort((a, b) => {
+        const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
+        const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
+        if (orderA !== orderB) {
+          return orderA - orderB;
+        }
+        return a.fieldName.localeCompare(b.fieldName);
+      });
+      nodes.forEach(node => {
+        if (node.children.length > 0) {
+          sortNodes(node.children);
+        }
+      });
+    };
+
+    sortNodes(rootNodes);
+
+    const flattened = [];
+    const traverse = nodes => {
+      nodes.forEach(node => {
+        const { children, ...rest } = node;
+        const flattenedNode = {
+          ...rest,
+          hasChildren: rest.hasChildren || (children && children.length > 0),
+        };
+        flattened.push(flattenedNode);
+        if (children.length > 0) {
+          traverse(children);
+        }
+      });
+    };
+
+    traverse(rootNodes);
+
+    return flattened;
+  }, [aggregation.fieldPathSummary, aggregation.filesCount]);
+
+  const summaryRows = useMemo(
+    () => (summaryMode === 'hierarchical' ? hierarchicalSummaryRows : flatSummaryRows),
+    [summaryMode, hierarchicalSummaryRows, flatSummaryRows],
+  );
+
   const filteredSummary = useMemo(() => {
-    const list = aggregation.fieldNameSummary || [];
+    const list = summaryRows || [];
     const term = summarySearch.trim().toLowerCase();
     if (!term) {
       return list;
     }
     return list.filter(item => {
-      const matchesName = item.fieldName.toLowerCase().includes(term);
+      const fieldName = item.fieldName || '';
+      const matchesName = fieldName.toLowerCase().includes(term);
       const matchesPath = item.samplePaths && item.samplePaths.some(path => path.toLowerCase().includes(term));
-      return matchesName || matchesPath;
+      const matchesSegments = item.pathSegments
+        ? item.pathSegments.some(segment => segment.toLowerCase().includes(term))
+        : false;
+      return matchesName || matchesPath || matchesSegments;
     });
-  }, [aggregation.fieldNameSummary, summarySearch]);
+  }, [summaryRows, summarySearch]);
 
   const visibleSummary = useMemo(() => {
     if (!filteredSummary) return [];
@@ -320,7 +434,58 @@ function ComparisonView({ comparison, files }) {
 
   useEffect(() => {
     setSummaryVisibleCount(100);
-  }, [summarySearch, aggregation.fieldNameSummary]);
+  }, [summarySearch, summaryRows]);
+
+  useEffect(() => {
+    if (!expandedSummaryRowKey) {
+      return;
+    }
+    const stillExists = filteredSummary.some(item => item.uniqueKey === expandedSummaryRowKey);
+    if (!stillExists) {
+      setExpandedSummaryRowKey(null);
+    }
+  }, [filteredSummary, expandedSummaryRowKey]);
+
+  useEffect(() => {
+    setShowAllSummaryValues(prev => {
+      if (!prev || Object.keys(prev).length === 0) {
+        return prev;
+      }
+      const retained = {};
+      filteredSummary.forEach(item => {
+        if (Object.prototype.hasOwnProperty.call(prev, item.uniqueKey)) {
+          retained[item.uniqueKey] = prev[item.uniqueKey];
+        }
+      });
+      if (Object.keys(retained).length === Object.keys(prev).length) {
+        return prev;
+      }
+      return retained;
+    });
+  }, [filteredSummary]);
+
+  useEffect(() => {
+    setExpandedSummaryRowKey(null);
+    setShowAllSummaryValues({});
+  }, [summaryMode]);
+
+  const handleSummaryRowClick = (rowKey) => {
+    setExpandedSummaryRowKey(prev => (prev === rowKey ? null : rowKey));
+  };
+
+  const handleSummaryRowKeyDown = (event, rowKey) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleSummaryRowClick(rowKey);
+    }
+  };
+
+  const toggleShowAllSummaryValues = (rowKey) => {
+    setShowAllSummaryValues(prev => ({
+      ...prev,
+      [rowKey]: !prev[rowKey],
+    }));
+  };
 
   const noMatchingFiles = isFilterActive && comparisonFiles.length === 0;
   const insufficientFilesForComparison = comparisonFiles.length > 0 && comparisonFiles.length < 2;
@@ -459,6 +624,43 @@ function ComparisonView({ comparison, files }) {
     return merged;
   }, [comparisonFiles]);
 
+  const collectExpandablePaths = useCallback((fields) => {
+    const paths = new Set();
+    if (!fields || fields.length === 0) {
+      return paths;
+    }
+    fields.forEach(field => {
+      if (field && field.hasChildren && field.path) {
+        paths.add(field.path);
+      }
+    });
+    return paths;
+  }, []);
+
+  const handleExpandAllForFields = useCallback((fields) => {
+    const paths = collectExpandablePaths(fields);
+    if (paths.size === 0) {
+      return;
+    }
+    setExpandedPaths(prev => {
+      const next = new Set(prev);
+      paths.forEach(path => next.add(path));
+      return next;
+    });
+  }, [collectExpandablePaths]);
+
+  const handleCollapseAllForFields = useCallback((fields) => {
+    const paths = collectExpandablePaths(fields);
+    if (paths.size === 0) {
+      return;
+    }
+    setExpandedPaths(prev => {
+      const next = new Set(prev);
+      paths.forEach(path => next.delete(path));
+      return next;
+    });
+  }, [collectExpandablePaths]);
+
   const handleExportComparison = () => {
     if (!canExport) {
       return;
@@ -505,6 +707,17 @@ function ComparisonView({ comparison, files }) {
     link.click();
     document.body.removeChild(link);
   };
+
+  const filesWithUniqueFields = useMemo(() => {
+    if (!activeComparison || !activeComparison.uniqueFields) {
+      return [];
+    }
+
+    return comparisonFiles.filter(file => {
+      const uniqueForFile = activeComparison.uniqueFields[file.filename] || [];
+      return uniqueForFile.length > 0;
+    });
+  }, [activeComparison, comparisonFiles]);
 
   return (
     <div className="fields-viewer">
@@ -613,13 +826,14 @@ function ComparisonView({ comparison, files }) {
             className="filter-add-btn"
             onClick={() => {
               setFilters(prev => {
-                if (prev.length >= 2) {
+                if (prev.length >= MAX_FILTERS) {
                   return prev;
                 }
                 return [...prev, createEmptyFilter()];
               });
             }}
-            disabled={filters.length >= 2}
+            disabled={filters.length >= MAX_FILTERS}
+            title={filters.length >= MAX_FILTERS ? `You can add up to ${MAX_FILTERS} filters.` : undefined}
             type="button"
           >
             + Add another filter
@@ -732,8 +946,29 @@ function ComparisonView({ comparison, files }) {
             </div>
 
             <div className="summary-table-controls">
-              <div className="summary-table-info">
-                Showing {visibleSummary.length} of {filteredSummary.length} field names
+              <div className="summary-table-controls-left">
+                <div className="summary-table-info">
+                  Showing {visibleSummary.length} of {filteredSummary.length}{' '}
+                  {filteredSummary.length === 1
+                    ? (summaryMode === 'hierarchical' ? 'field path' : 'field name')
+                    : (summaryMode === 'hierarchical' ? 'field paths' : 'field names')}
+                </div>
+                <div className="summary-view-toggle" role="group" aria-label="Summary view mode">
+                  <button
+                    type="button"
+                    className={`summary-view-toggle__btn ${summaryMode === 'hierarchical' ? 'active' : ''}`}
+                    onClick={() => setSummaryMode('hierarchical')}
+                  >
+                    Hierarchy
+                  </button>
+                  <button
+                    type="button"
+                    className={`summary-view-toggle__btn ${summaryMode === 'flat' ? 'active' : ''}`}
+                    onClick={() => setSummaryMode('flat')}
+                  >
+                    Flat
+                  </button>
+                </div>
               </div>
               <input
                 className="summary-search-input"
@@ -753,41 +988,164 @@ function ComparisonView({ comparison, files }) {
               <div className="summary-table">
                 <div className="summary-table-header">
                   <div>Field Name</div>
+                  <div>Depth</div>
                   <div>Files</div>
                   <div>Presence</div>
                   <div>Occurrences</div>
                   <div>Sample Paths</div>
                 </div>
-                {visibleSummary.map(item => (
-                  <div className="summary-table-row" key={item.fieldName}>
-                    <div className="summary-field-name">
-                      <code>{item.fieldName}</code>
-                    </div>
-                    <div className="summary-files-count">
-                      {item.filesWithField}/{aggregation.filesCount}
-                    </div>
-                    <div className="summary-presence">
-                      {item.presencePercent.toFixed(0)}%
-                    </div>
-                    <div className="summary-occurrences">
-                      <span className="summary-occ-total">{item.totalOccurrences}</span>
-                      <span className="summary-occ-avg">
-                        avg {item.averageOccurrencesPerFile.toFixed(1)}
-                      </span>
-                    </div>
-                    <div className="summary-sample-paths">
-                      {item.samplePaths && item.samplePaths.length > 0 ? (
-                        item.samplePaths.map(path => (
-                          <span key={path} className="summary-path-chip">
-                            {path}
+                {visibleSummary.map(item => {
+                  const rowKey = item.uniqueKey || item.fieldName;
+                  const isExpanded = expandedSummaryRowKey === rowKey;
+                  const valueCounts = item.valueCounts || [];
+                  const showAllValues = !!showAllSummaryValues[rowKey];
+                  const displayedValueCounts = showAllValues ? valueCounts : valueCounts.slice(0, 10);
+                  const hasAdditionalValues = valueCounts.length > 10;
+                  const hasValues = valueCounts.length > 0;
+                  const indentLevel = summaryMode === 'hierarchical' ? Math.max(item.depth || 0, 0) : 0;
+                  const depthDisplay = typeof item.depth === 'number' ? item.depth : (item.pathSegments ? item.pathSegments.length - 1 : 0);
+                  const accessibleLabel = summaryMode === 'hierarchical'
+                    ? `View value distribution for ${item.fieldName} at ${item.path}`
+                    : `View value distribution for ${item.fieldName}`;
+                  const rowClassNames = [
+                    'summary-table-row',
+                    'summary-table-row--interactive',
+                    isExpanded ? 'expanded' : '',
+                    summaryMode === 'hierarchical' && item.hasChildren ? 'summary-table-row--hierarchical' : '',
+                  ].filter(Boolean).join(' ');
+
+                  const handleToggleShowAll = (event) => {
+                    event.stopPropagation();
+                    toggleShowAllSummaryValues(rowKey);
+                  };
+
+                  return (
+                    <React.Fragment key={rowKey}>
+                      <div
+                        className={rowClassNames}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => handleSummaryRowClick(rowKey)}
+                        onKeyDown={(event) => handleSummaryRowKeyDown(event, rowKey)}
+                        aria-expanded={isExpanded}
+                        aria-label={accessibleLabel}
+                      >
+                        <div className={`summary-field-name ${summaryMode === 'hierarchical' ? 'summary-field-name--hierarchy' : ''}`}>
+                          {summaryMode === 'hierarchical' && indentLevel > 0 && (
+                            <span
+                              className="summary-hierarchy-offset"
+                              style={{ width: `${indentLevel * 1.25}rem` }}
+                              aria-hidden="true"
+                            >
+                              <span className="summary-hierarchy-marker" />
+                            </span>
+                          )}
+                          <span className={`summary-row-caret ${isExpanded ? 'expanded' : ''}`} aria-hidden="true">
+                            {isExpanded ? '▾' : '▸'}
                           </span>
-                        ))
-                      ) : (
-                        <span className="summary-no-path">—</span>
+                          <code>{item.fieldName}</code>
+                          <span className="summary-field-pill">
+                            {hasValues
+                              ? `${item.uniqueValuesCount} value${item.uniqueValuesCount === 1 ? '' : 's'}`
+                              : 'No values detected'}
+                          </span>
+                        </div>
+                        <div className="summary-depth">
+                          {depthDisplay}
+                        </div>
+                        <div className="summary-files-count">
+                          {item.filesWithField}/{aggregation.filesCount}
+                        </div>
+                        <div className="summary-presence">
+                          {item.presencePercent.toFixed(0)}%
+                        </div>
+                        <div className="summary-occurrences">
+                          <span className="summary-occ-total">{item.totalOccurrences}</span>
+                          <span className="summary-occ-avg">
+                            avg {item.averageOccurrencesPerFile.toFixed(1)}
+                          </span>
+                        </div>
+                        <div className="summary-sample-paths">
+                          {item.samplePaths && item.samplePaths.length > 0 ? (
+                            item.samplePaths.map(path => (
+                              <span key={path} className="summary-path-chip">
+                                {path}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="summary-no-path">—</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="summary-row-details">
+                          <div className="summary-values-header">
+                            <span>
+                              <strong>Unique values:</strong> {item.uniqueValuesCount}
+                            </span>
+                            <span>
+                              <strong>Total occurrences:</strong> {item.totalOccurrences}
+                            </span>
+                          </div>
+
+                          {summaryMode === 'hierarchical' && item.path && (
+                            <div className="summary-path-detail">
+                              <strong>Path:</strong> {item.path}
+                            </div>
+                          )}
+
+                          {hasValues ? (
+                            <>
+                              <ul className="summary-values-list">
+                                {displayedValueCounts.map((valueInfo, index) => {
+                                  const valueLabel = valueInfo.value === '' ? '(empty)' : valueInfo.value;
+                                  const percentageLabel = valueInfo.percentage != null
+                                    ? `${valueInfo.percentage.toFixed(1)}%`
+                                    : '—';
+                                  return (
+                                    <li className="summary-value-item" key={`${item.fieldName}-${index}-${valueInfo.value}`}>
+                                      <div className="summary-value-info">
+                                        <span className="summary-value-rank">{index + 1}.</span>
+                                        <span className="summary-value-text" title={valueLabel}>
+                                          {valueLabel}
+                                        </span>
+                                      </div>
+                                      <div className="summary-value-stats">
+                                        <span className="summary-value-count">
+                                          {valueInfo.count} occurrence{valueInfo.count === 1 ? '' : 's'}
+                                        </span>
+                                        <span className="summary-value-percentage">
+                                          {percentageLabel}
+                                        </span>
+                                      </div>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+
+                              {hasAdditionalValues && (
+                                <button
+                                  type="button"
+                                  className="summary-values-toggle"
+                                  onClick={handleToggleShowAll}
+                                >
+                                  {showAllValues
+                                    ? 'Show top 10'
+                                    : `Show all ${valueCounts.length} values`}
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <div className="summary-no-values">
+                              No text values were captured for this field. It may only contain nested elements or empty content.
+                            </div>
+                          )}
+                        </div>
                       )}
-                    </div>
-                  </div>
-                ))}
+                    </React.Fragment>
+                  );
+                })}
               </div>
             )}
 
@@ -831,6 +1189,24 @@ function ComparisonView({ comparison, files }) {
                   Fields marked with (X/Y files) appear in X out of Y files. 
                   Hover over the file count to see which files contain each field.
                 </div>
+                <div className="tree-controls" style={{ marginBottom: '1rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleExpandAllForFields(mergedFields)}
+                    className="export-btn tree-control-btn tree-control-btn--expand"
+                    disabled={mergedFields.length === 0}
+                  >
+                    Expand all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCollapseAllForFields(mergedFields)}
+                    className="export-btn tree-control-btn tree-control-btn--collapse"
+                    disabled={mergedFields.length === 0}
+                  >
+                    Collapse all
+                  </button>
+                </div>
                 <HierarchicalFieldList
                   fields={mergedFields}
                   expandedPaths={expandedPaths}
@@ -871,6 +1247,24 @@ function ComparisonView({ comparison, files }) {
                     Hover over the warning icon to see alternative paths.
                   </div>
                 )}
+                <div className="tree-controls" style={{ marginBottom: '1rem' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleExpandAllForFields(activeComparison.commonFields)}
+                    className="export-btn tree-control-btn tree-control-btn--expand"
+                    disabled={activeComparison.commonFields.length === 0}
+                  >
+                    Expand all
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCollapseAllForFields(activeComparison.commonFields)}
+                    className="export-btn tree-control-btn tree-control-btn--collapse"
+                    disabled={activeComparison.commonFields.length === 0}
+                  >
+                    Collapse all
+                  </button>
+                </div>
                 <HierarchicalFieldList
                   fields={activeComparison.commonFields}
                   expandedPaths={expandedPaths}
@@ -887,27 +1281,27 @@ function ComparisonView({ comparison, files }) {
             <h3 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
               Fields unique to each file (not present in any other file)
             </h3>
-            <div className="comparison-container">
-              {comparisonFiles.map((file) => (
-                <div key={file.id}>
-                  <h4 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
-                    {file.filename}
-                  </h4>
-                  {(activeComparison.uniqueFields[file.filename] || []).length === 0 ? (
-                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
-                      No unique fields
-                    </p>
-                  ) : (
+            {filesWithUniqueFields.length === 0 ? (
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+                No unique fields were found across the selected files.
+              </p>
+            ) : (
+              <div className="comparison-container">
+                {filesWithUniqueFields.map(file => (
+                  <div key={file.id}>
+                    <h4 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
+                      {file.filename}
+                    </h4>
                     <HierarchicalFieldList
                       fields={activeComparison.uniqueFields[file.filename]}
                       expandedPaths={expandedPaths}
                       setExpandedPaths={setExpandedPaths}
                       type="unique"
                     />
-                  )}
-                </div>
-              ))}
-            </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
