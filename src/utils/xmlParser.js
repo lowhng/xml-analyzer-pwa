@@ -94,6 +94,9 @@ export function extractFields(xmlDoc) {
 
       // Create field key for deduplication
       const fieldKey = `${nodeName}|${depth}`;
+      const isLeafNode = node.children.length === 0;
+      const trimmedTextContent = node.textContent ? node.textContent.trim() : '';
+      const leafTextContent = isLeafNode ? trimmedTextContent : null;
 
       if (!fieldMap.has(fieldKey)) {
         // Get or create order counter for this parent
@@ -102,6 +105,12 @@ export function extractFields(xmlDoc) {
         }
         const orderIndex = parentOrderCounters.get(parentPath);
         parentOrderCounters.set(parentPath, orderIndex + 1);
+
+        const initialValueCounts = {};
+        if (isLeafNode) {
+          const valueKey = leafTextContent !== null && leafTextContent !== undefined ? leafTextContent : '';
+          initialValueCounts[valueKey] = 1;
+        }
         
         const field = {
           name: nodeName,
@@ -116,6 +125,8 @@ export function extractFields(xmlDoc) {
           occurrences: 1,
           orderIndex: orderIndex, // Track order of first appearance under this parent
           parentPath: parentPath, // Store parent path for ordering children
+          valueCounts: initialValueCounts,
+          uniqueValues: Object.keys(initialValueCounts).length,
         };
 
         fieldMap.set(fieldKey, field);
@@ -124,6 +135,12 @@ export function extractFields(xmlDoc) {
         // Increment occurrence count for duplicate fields
         const existingField = fieldMap.get(fieldKey);
         existingField.occurrences += 1;
+        if (isLeafNode) {
+          const valueKey = leafTextContent !== null && leafTextContent !== undefined ? leafTextContent : '';
+          existingField.valueCounts = existingField.valueCounts || {};
+          existingField.valueCounts[valueKey] = (existingField.valueCounts[valueKey] || 0) + 1;
+          existingField.uniqueValues = Object.keys(existingField.valueCounts).length;
+        }
       }
 
       // Traverse children in order
@@ -237,6 +254,7 @@ export function compareFields(fileDataArray) {
         occurrencesPerFile: {},
         paths: new Set(),
         depths: new Set(),
+        valueCounts: new Map(),
       });
     }
     const entry = fieldNameStats.get(field.name);
@@ -251,10 +269,26 @@ export function compareFields(fileDataArray) {
         path: field.path,
         fieldName: field.name,
         depth: field.depth,
+        parentPath: field.parentPath || '',
         filesWithPath: new Set(),
         totalOccurrences: 0,
         occurrencesPerFile: {},
+        hasChildren: field.hasChildren,
+        childCount: field.childCount,
+        orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
+        valueCounts: new Map(),
       });
+    } else {
+      const existingEntry = fieldPathStats.get(field.path);
+      existingEntry.hasChildren = existingEntry.hasChildren || field.hasChildren;
+      if (typeof field.childCount === 'number') {
+        const existingCount = typeof existingEntry.childCount === 'number' ? existingEntry.childCount : 0;
+        existingEntry.childCount = Math.max(existingCount, field.childCount);
+      }
+      if (field.orderIndex !== undefined) {
+        const currentOrder = existingEntry.orderIndex !== undefined ? existingEntry.orderIndex : field.orderIndex;
+        existingEntry.orderIndex = Math.min(currentOrder, field.orderIndex);
+      }
     }
     return fieldPathStats.get(field.path);
   };
@@ -269,9 +303,35 @@ export function compareFields(fileDataArray) {
 
       const nameEntry = ensureFieldNameEntry(field);
       nameEntry.totalOccurrences += occurrences;
+      if (field.valueCounts) {
+        Object.entries(field.valueCounts).forEach(([value, count]) => {
+          if (value === undefined) {
+            return;
+          }
+          const normalizedValue = typeof value === 'string' ? value : String(value);
+          const incrementBy = typeof count === 'number' && !Number.isNaN(count) ? count : 0;
+          if (incrementBy > 0) {
+            const current = nameEntry.valueCounts.get(normalizedValue) || 0;
+            nameEntry.valueCounts.set(normalizedValue, current + incrementBy);
+          }
+        });
+      }
 
       const pathEntry = ensureFieldPathEntry(field);
       pathEntry.totalOccurrences += occurrences;
+      if (field.valueCounts) {
+        Object.entries(field.valueCounts).forEach(([value, count]) => {
+          if (value === undefined) {
+            return;
+          }
+          const normalizedValue = typeof value === 'string' ? value : String(value);
+          const incrementBy = typeof count === 'number' && !Number.isNaN(count) ? count : 0;
+          if (incrementBy > 0) {
+            const current = pathEntry.valueCounts.get(normalizedValue) || 0;
+            pathEntry.valueCounts.set(normalizedValue, current + incrementBy);
+          }
+        });
+      }
 
       perFileNameCounts.set(
         field.name,
@@ -456,35 +516,74 @@ export function compareFields(fileDataArray) {
       averageFieldsPerFile: totalFiles > 0 ? totalFieldInstances / totalFiles : 0,
       uniqueFieldNames: fieldNameStats.size,
       uniqueFieldPaths: fieldPathStats.size,
-      fieldNameSummary: Array.from(fieldNameStats.values()).map(entry => ({
-        fieldName: entry.fieldName,
-        filesWithField: entry.filesWithField.size,
-        filesMissingField: totalFiles - entry.filesWithField.size,
-        presencePercent: totalFiles > 0 ? (entry.filesWithField.size / totalFiles) * 100 : 0,
-        totalOccurrences: entry.totalOccurrences,
-        averageOccurrencesPerFile: entry.filesWithField.size > 0 ? entry.totalOccurrences / entry.filesWithField.size : 0,
-        samplePaths: Array.from(entry.paths).slice(0, 3),
-        depths: (() => {
-          const depthValues = Array.from(entry.depths);
-          if (depthValues.length === 0) {
-            return { min: 0, max: 0 };
-          }
-          return {
-            min: Math.min(...depthValues),
-            max: Math.max(...depthValues),
-          };
-        })(),
-      })),
-      fieldPathSummary: Array.from(fieldPathStats.values()).map(entry => ({
-        path: entry.path,
-        fieldName: entry.fieldName,
-        depth: entry.depth,
-        filesWithPath: entry.filesWithPath.size,
-        filesMissingPath: totalFiles - entry.filesWithPath.size,
-        presencePercent: totalFiles > 0 ? (entry.filesWithPath.size / totalFiles) * 100 : 0,
-        totalOccurrences: entry.totalOccurrences,
-        averageOccurrencesPerFile: entry.filesWithPath.size > 0 ? entry.totalOccurrences / entry.filesWithPath.size : 0,
-      })),
+      fieldNameSummary: Array.from(fieldNameStats.values()).map(entry => {
+        const sortedValueCounts = Array.from(entry.valueCounts.entries())
+          .map(([value, count]) => ({
+            value,
+            count,
+            percentage: entry.totalOccurrences > 0 ? (count / entry.totalOccurrences) * 100 : 0,
+          }))
+          .sort((a, b) => {
+            if (b.count !== a.count) {
+              return b.count - a.count;
+            }
+            return a.value.localeCompare(b.value);
+          });
+
+        return {
+          fieldName: entry.fieldName,
+          filesWithField: entry.filesWithField.size,
+          filesMissingField: totalFiles - entry.filesWithField.size,
+          presencePercent: totalFiles > 0 ? (entry.filesWithField.size / totalFiles) * 100 : 0,
+          totalOccurrences: entry.totalOccurrences,
+          averageOccurrencesPerFile: entry.filesWithField.size > 0 ? entry.totalOccurrences / entry.filesWithField.size : 0,
+          samplePaths: Array.from(entry.paths).slice(0, 3),
+          depths: (() => {
+            const depthValues = Array.from(entry.depths);
+            if (depthValues.length === 0) {
+              return { min: 0, max: 0 };
+            }
+            return {
+              min: Math.min(...depthValues),
+              max: Math.max(...depthValues),
+            };
+          })(),
+          valueCounts: sortedValueCounts,
+          uniqueValuesCount: sortedValueCounts.length,
+        };
+      }),
+      fieldPathSummary: Array.from(fieldPathStats.values()).map(entry => {
+        const sortedValueCounts = Array.from(entry.valueCounts.entries())
+          .map(([value, count]) => ({
+            value,
+            count,
+            percentage: entry.totalOccurrences > 0 ? (count / entry.totalOccurrences) * 100 : 0,
+          }))
+          .sort((a, b) => {
+            if (b.count !== a.count) {
+              return b.count - a.count;
+            }
+            return a.value.localeCompare(b.value);
+          });
+
+        return {
+          path: entry.path,
+          fieldName: entry.fieldName,
+          depth: entry.depth,
+          parentPath: entry.parentPath || '',
+          hasChildren: entry.hasChildren,
+          childCount: entry.childCount,
+          orderIndex: entry.orderIndex,
+          pathSegments: entry.path.split(' > '),
+          filesWithPath: entry.filesWithPath.size,
+          filesMissingPath: totalFiles - entry.filesWithPath.size,
+          presencePercent: totalFiles > 0 ? (entry.filesWithPath.size / totalFiles) * 100 : 0,
+          totalOccurrences: entry.totalOccurrences,
+          averageOccurrencesPerFile: entry.filesWithPath.size > 0 ? entry.totalOccurrences / entry.filesWithPath.size : 0,
+          valueCounts: sortedValueCounts,
+          uniqueValuesCount: sortedValueCounts.length,
+        };
+      }),
     },
   };
 }
