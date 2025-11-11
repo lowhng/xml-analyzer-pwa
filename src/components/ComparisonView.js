@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { comparisonToExcel } from '../utils/xmlParser';
+import React, { useState, useMemo, useEffect } from 'react';
+import { comparisonToExcel, compareFields } from '../utils/xmlParser';
 
 // Component to render hierarchical field list
 function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles }) {
@@ -179,20 +179,198 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
 }
 
 function ComparisonView({ comparison, files }) {
-  const [activeTab, setActiveTab] = useState('common');
+  const [activeTab, setActiveTab] = useState('summary');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
+  const [summarySearch, setSummarySearch] = useState('');
+  const [summaryVisibleCount, setSummaryVisibleCount] = useState(100);
+  const createEmptyFilter = () => ({
+    id: `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    field: '',
+    value: '',
+    caseSensitive: false,
+  });
+  const [filters, setFilters] = useState(() => [createEmptyFilter()]);
+
+  const activeFilters = useMemo(() => {
+    return filters
+      .map(filter => {
+        const trimmedValue = filter.value.trim();
+        if (!filter.field || trimmedValue === '') {
+          return null;
+        }
+        return {
+          ...filter,
+          trimmedValue,
+        };
+      })
+      .filter(Boolean);
+  }, [filters]);
+
+  const isFilterActive = activeFilters.length > 0;
+  const hasAnyFilterInput = useMemo(
+    () =>
+      filters.some(
+        filter =>
+          filter.field ||
+          filter.value.trim() !== '' ||
+          filter.caseSensitive
+      ),
+    [filters]
+  );
+
+  const availableFields = useMemo(() => {
+    const fieldNames = new Set();
+
+    files.forEach(file => {
+      file.fields.forEach(field => {
+        const textValue = field.textContent ? field.textContent.trim() : '';
+        if (textValue.length > 0) {
+          fieldNames.add(field.name);
+        }
+      });
+    });
+
+    return Array.from(fieldNames).sort((a, b) => a.localeCompare(b));
+  }, [files]);
+
+  const filteredFiles = useMemo(() => {
+    if (!isFilterActive) {
+      return files;
+    }
+
+    return files.filter(file =>
+      activeFilters.every(filterCondition => {
+        const normalizedFilterValue = filterCondition.caseSensitive
+          ? filterCondition.trimmedValue
+          : filterCondition.trimmedValue.toLowerCase();
+
+        return file.fields.some(field => {
+          if (field.name !== filterCondition.field) {
+            return false;
+          }
+
+          const textValue = field.textContent ? field.textContent.trim() : '';
+          if (textValue.length === 0) {
+            return false;
+          }
+
+          const candidateValue = filterCondition.caseSensitive ? textValue : textValue.toLowerCase();
+          return candidateValue === normalizedFilterValue;
+        });
+      })
+    );
+  }, [files, isFilterActive, activeFilters]);
+
+  const comparisonFiles = filteredFiles;
+
+  const activeComparison = useMemo(() => {
+    if (!isFilterActive) {
+      return comparison;
+    }
+    return compareFields(comparisonFiles);
+  }, [comparison, comparisonFiles, isFilterActive]);
+
+  const aggregation = useMemo(() => {
+    if (!activeComparison || !activeComparison.aggregation) {
+      return {
+        filesCount: comparisonFiles.length,
+        totalFieldInstances: 0,
+        averageFieldsPerFile: 0,
+        uniqueFieldNames: 0,
+        uniqueFieldPaths: 0,
+        fieldNameSummary: [],
+        fieldPathSummary: [],
+      };
+    }
+    return activeComparison.aggregation;
+  }, [activeComparison, comparisonFiles.length]);
+
+  const filteredSummary = useMemo(() => {
+    const list = aggregation.fieldNameSummary || [];
+    const term = summarySearch.trim().toLowerCase();
+    if (!term) {
+      return list;
+    }
+    return list.filter(item => {
+      const matchesName = item.fieldName.toLowerCase().includes(term);
+      const matchesPath = item.samplePaths && item.samplePaths.some(path => path.toLowerCase().includes(term));
+      return matchesName || matchesPath;
+    });
+  }, [aggregation.fieldNameSummary, summarySearch]);
+
+  const visibleSummary = useMemo(() => {
+    if (!filteredSummary) return [];
+    return filteredSummary.slice(0, summaryVisibleCount);
+  }, [filteredSummary, summaryVisibleCount]);
+
+  const filterSummaryForExport = useMemo(() => {
+    if (!isFilterActive) {
+      return null;
+    }
+
+    return activeFilters.map(filter => {
+      const parts = [`${filter.field}`];
+      if (filter.caseSensitive) {
+        parts.push('(case-sensitive)');
+      }
+      parts.push(`= "${filter.trimmedValue}"`);
+      return parts.join(' ');
+    }).join(' AND ');
+  }, [activeFilters, isFilterActive]);
+
+  useEffect(() => {
+    setSummaryVisibleCount(100);
+  }, [summarySearch, aggregation.fieldNameSummary]);
+
+  const noMatchingFiles = isFilterActive && comparisonFiles.length === 0;
+  const insufficientFilesForComparison = comparisonFiles.length > 0 && comparisonFiles.length < 2;
+  const canExport = comparisonFiles.length > 0;
+
+  const buildStructureFromFields = (fields) => {
+    if (!fields || fields.length === 0) {
+      return {};
+    }
+
+    const structure = {};
+
+    fields.forEach(field => {
+      const segments = field.path.split(' > ');
+      let currentLevel = structure;
+
+      segments.forEach((segment, index) => {
+        const isLastSegment = index === segments.length - 1;
+        const existingValue = currentLevel[segment];
+
+        if (!isLastSegment) {
+          if (existingValue === undefined || typeof existingValue !== 'object') {
+            currentLevel[segment] = {};
+          }
+          currentLevel = currentLevel[segment];
+          return;
+        }
+
+        if (field.hasChildren) {
+          currentLevel[segment] = existingValue && typeof existingValue === 'object' ? existingValue : {};
+        } else {
+          currentLevel[segment] = existingValue && typeof existingValue === 'object' ? existingValue : '';
+        }
+      });
+    });
+
+    return structure;
+  };
 
   // Merge all fields from all files, grouping by similar structure
   // For each parent path, show all unique field names from all files
   const mergedFields = useMemo(() => {
-    if (files.length === 0) return [];
+    if (comparisonFiles.length === 0) return [];
 
     // Track all unique field names under each parent path
     // parentPath -> Map of fieldName -> { field info, presentInFiles }
     const parentFieldMap = new Map();
     
     // First pass: collect all fields grouped by parent path and field name
-    files.forEach(file => {
+    comparisonFiles.forEach(file => {
       file.fields.forEach(field => {
         const parentPath = field.parentPath || '';
         const fieldName = field.name;
@@ -246,7 +424,7 @@ function ComparisonView({ comparison, files }) {
       // Sort by order index from reference file if available
       fieldEntries.sort(([nameA, fieldA], [nameB, fieldB]) => {
         // Try to get order from reference file
-        const refFile = files[0];
+        const refFile = comparisonFiles[0];
         const refFieldA = refFile.fields.find(f => 
           f.name === nameA && (f.parentPath || '') === parentPath
         );
@@ -279,10 +457,18 @@ function ComparisonView({ comparison, files }) {
     processFieldsAtDepth(0, '');
     
     return merged;
-  }, [files]);
+  }, [comparisonFiles]);
 
   const handleExportComparison = () => {
-    const blob = comparisonToExcel(comparison, mergedFields);
+    if (!canExport) {
+      return;
+    }
+
+    const blob = comparisonToExcel(activeComparison, mergedFields, {
+      filtersSummary: filterSummaryForExport,
+      filteredFilesCount: comparisonFiles.length,
+      totalFilesCount: files.length,
+    });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
@@ -293,16 +479,204 @@ function ComparisonView({ comparison, files }) {
     document.body.removeChild(link);
   };
 
+  const handleExportJson = () => {
+    if (!canExport) {
+      return;
+    }
+
+    const payload = {};
+
+    if (mergedFields.length > 0) {
+      payload.merged = buildStructureFromFields(mergedFields);
+    }
+
+    if (activeComparison.commonFields.length > 0) {
+      payload.common = buildStructureFromFields(activeComparison.commonFields);
+    }
+
+    const jsonContent = JSON.stringify(payload, null, 2);
+    const blob = new Blob([jsonContent], { type: 'application/json' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'comparison_report.json');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div className="fields-viewer">
       <div className="fields-header">
         <h2>File Comparison</h2>
-        <button className="export-btn" onClick={handleExportComparison}>
-          📊 Export to Excel
-        </button>
+        <div className="fields-header-actions">
+          <button
+            className="export-btn"
+            onClick={handleExportComparison}
+            disabled={!canExport}
+            title={canExport ? 'Export the current comparison to Excel' : 'No data available to export'}
+          >
+            📊 Export to Excel
+          </button>
+          <button
+            className="export-btn"
+            onClick={handleExportJson}
+            disabled={!canExport}
+            title={canExport ? 'Export merged/common fields to JSON' : 'No data available to export'}
+          >
+            📝 Export JSON
+          </button>
+        </div>
+      </div>
+
+      <div className="comparison-filter-bar">
+        {filters.map((filter, index) => (
+          <div className="filter-row" key={filter.id}>
+            <div className="filter-group">
+              <label htmlFor={`comparison-filter-field-${filter.id}`}>
+                Field{filters.length > 1 ? ` ${index + 1}` : ''}
+              </label>
+              <select
+                id={`comparison-filter-field-${filter.id}`}
+                value={filter.field}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setFilters(prev =>
+                    prev.map(f => f.id === filter.id ? { ...f, field: value, value: value ? f.value : '', caseSensitive: f.caseSensitive } : f)
+                  );
+                }}
+              >
+                <option value="">All fields</option>
+                {availableFields.map(fieldName => (
+                  <option key={fieldName} value={fieldName}>
+                    {fieldName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="filter-group filter-value-group">
+              <label htmlFor={`comparison-filter-value-${filter.id}`}>Value</label>
+              <div className="filter-value-controls">
+                <input
+                  id={`comparison-filter-value-${filter.id}`}
+                  type="text"
+                  placeholder="Enter field value"
+                  value={filter.value}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setFilters(prev =>
+                      prev.map(f => f.id === filter.id ? { ...f, value } : f)
+                    );
+                  }}
+                  disabled={!filter.field}
+                />
+                <label className="filter-case-sensitive">
+                  <input
+                    type="checkbox"
+                    checked={filter.caseSensitive}
+                    onChange={(e) => {
+                      const value = e.target.checked;
+                      setFilters(prev =>
+                        prev.map(f => f.id === filter.id ? { ...f, caseSensitive: value } : f)
+                      );
+                    }}
+                  />
+                  Case sensitive
+                </label>
+              </div>
+            </div>
+
+            {filters.length > 1 && (
+              <button
+                className="filter-remove-btn"
+                onClick={() => {
+                  setFilters(prev => {
+                    if (prev.length === 1) {
+                      return prev;
+                    }
+                    return prev.filter(f => f.id !== filter.id);
+                  });
+                }}
+                title="Remove this filter"
+                type="button"
+              >
+                Remove
+              </button>
+            )}
+          </div>
+        ))}
+
+        <div className="filter-actions">
+          <button
+            className="filter-add-btn"
+            onClick={() => {
+              setFilters(prev => {
+                if (prev.length >= 2) {
+                  return prev;
+                }
+                return [...prev, createEmptyFilter()];
+              });
+            }}
+            disabled={filters.length >= 2}
+            type="button"
+          >
+            + Add another filter
+          </button>
+          <button
+            className="filter-clear-btn"
+            onClick={() => setFilters([createEmptyFilter()])}
+            disabled={!hasAnyFilterInput}
+            type="button"
+          >
+            Clear Filters
+          </button>
+        </div>
+
+        {isFilterActive && (
+          <div className="filter-summary">
+            {noMatchingFiles ? (
+              <span>
+                No files match the selected filters:{' '}
+                {activeFilters.map(filter => (
+                  <span key={filter.id}>
+                    <code>{filter.field}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                  </span>
+                )).reduce((acc, element, idx) => (
+                  idx === 0 ? [element] : [...acc, ', ', element]
+                ), [])}
+              </span>
+            ) : (
+              <span>
+                Showing {comparisonFiles.length} of {files.length} files where{' '}
+                {activeFilters.map(filter => (
+                  <span key={filter.id}>
+                    <code>{filter.field}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                  </span>
+                )).reduce((acc, element, idx) => (
+                  idx === 0 ? [element] : [...acc, ' and ', element]
+                ), [])}
+              </span>
+            )}
+          </div>
+        )}
+
+        {insufficientFilesForComparison && (
+          <div className="filter-summary warning">
+            Need at least two matching files for a full comparison. Displaying available data for the {comparisonFiles.length === 1 ? 'single matching file.' : 'selected files.'}
+          </div>
+        )}
       </div>
 
       <div className="tabs" style={{ borderBottom: '1px solid var(--border-color)', padding: '0 1rem', margin: 0 }}>
+        <button
+          className={`tab ${activeTab === 'summary' ? 'active' : ''}`}
+          onClick={() => setActiveTab('summary')}
+          style={{ borderBottom: activeTab === 'summary' ? '3px solid var(--primary-color)' : 'none' }}
+        >
+          Summary
+        </button>
         <button
           className={`tab ${activeTab === 'merged' ? 'active' : ''}`}
           onClick={() => setActiveTab('merged')}
@@ -315,14 +689,7 @@ function ComparisonView({ comparison, files }) {
           onClick={() => setActiveTab('common')}
           style={{ borderBottom: activeTab === 'common' ? '3px solid var(--primary-color)' : 'none' }}
         >
-          Common Fields ({comparison.commonFields.length})
-        </button>
-        <button
-          className={`tab ${activeTab === 'differences' ? 'active' : ''}`}
-          onClick={() => setActiveTab('differences')}
-          style={{ borderBottom: activeTab === 'differences' ? '3px solid var(--primary-color)' : 'none' }}
-        >
-          Differences
+          Common Fields ({activeComparison.commonFields.length})
         </button>
         <button
           className={`tab ${activeTab === 'unique' ? 'active' : ''}`}
@@ -334,6 +701,110 @@ function ComparisonView({ comparison, files }) {
       </div>
 
       <div style={{ padding: '1.5rem' }}>
+        {activeTab === 'summary' && (
+          <div className="summary-view">
+            <div className="summary-header">
+              <h3>Comparison Summary</h3>
+              <p>
+                Aggregated view of field coverage across {aggregation.filesCount} {aggregation.filesCount === 1 ? 'file' : 'files'}.
+              </p>
+            </div>
+
+            <div className="summary-cards">
+              <div className="summary-card">
+                <div className="card-label">Files Compared</div>
+                <div className="card-value">{aggregation.filesCount}</div>
+              </div>
+              <div className="summary-card">
+                <div className="card-label">Unique Field Names</div>
+                <div className="card-value">{aggregation.uniqueFieldNames}</div>
+              </div>
+              <div className="summary-card">
+                <div className="card-label">Unique Field Paths</div>
+                <div className="card-value">{aggregation.uniqueFieldPaths}</div>
+              </div>
+              <div className="summary-card">
+                <div className="card-label">Average Fields per File</div>
+                <div className="card-value">
+                  {aggregation.averageFieldsPerFile ? aggregation.averageFieldsPerFile.toFixed(1) : '0.0'}
+                </div>
+              </div>
+            </div>
+
+            <div className="summary-table-controls">
+              <div className="summary-table-info">
+                Showing {visibleSummary.length} of {filteredSummary.length} field names
+              </div>
+              <input
+                className="summary-search-input"
+                type="search"
+                placeholder="Search field names or sample paths"
+                value={summarySearch}
+                onChange={(e) => setSummarySearch(e.target.value)}
+                aria-label="Search field names"
+              />
+            </div>
+
+            {filteredSummary.length === 0 ? (
+              <div className="summary-empty-state">
+                No fields match the current filters.
+              </div>
+            ) : (
+              <div className="summary-table">
+                <div className="summary-table-header">
+                  <div>Field Name</div>
+                  <div>Files</div>
+                  <div>Presence</div>
+                  <div>Occurrences</div>
+                  <div>Sample Paths</div>
+                </div>
+                {visibleSummary.map(item => (
+                  <div className="summary-table-row" key={item.fieldName}>
+                    <div className="summary-field-name">
+                      <code>{item.fieldName}</code>
+                    </div>
+                    <div className="summary-files-count">
+                      {item.filesWithField}/{aggregation.filesCount}
+                    </div>
+                    <div className="summary-presence">
+                      {item.presencePercent.toFixed(0)}%
+                    </div>
+                    <div className="summary-occurrences">
+                      <span className="summary-occ-total">{item.totalOccurrences}</span>
+                      <span className="summary-occ-avg">
+                        avg {item.averageOccurrencesPerFile.toFixed(1)}
+                      </span>
+                    </div>
+                    <div className="summary-sample-paths">
+                      {item.samplePaths && item.samplePaths.length > 0 ? (
+                        item.samplePaths.map(path => (
+                          <span key={path} className="summary-path-chip">
+                            {path}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="summary-no-path">—</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {filteredSummary.length > visibleSummary.length && (
+              <div className="summary-show-more">
+                <button
+                  type="button"
+                  className="summary-show-more-btn"
+                  onClick={() => setSummaryVisibleCount(prev => prev + 100)}
+                >
+                  Show 100 more
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'merged' && (
           <div>
             <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
@@ -365,7 +836,7 @@ function ComparisonView({ comparison, files }) {
                   expandedPaths={expandedPaths}
                   setExpandedPaths={setExpandedPaths}
                   type="merged"
-                  totalFiles={files.length}
+                  totalFiles={comparisonFiles.length}
                 />
               </>
             )}
@@ -376,17 +847,17 @@ function ComparisonView({ comparison, files }) {
           <div>
             <div style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
               <h3 style={{ margin: 0, color: 'var(--text-primary)' }}>
-                Fields present in all {files.length} files
+                Fields present in all {comparisonFiles.length} files
               </h3>
               <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-                (Structure shown from: {files[0]?.filename})
+                (Structure shown from: {comparisonFiles[0]?.filename})
               </span>
             </div>
-            {comparison.commonFields.length === 0 ? (
+            {activeComparison.commonFields.length === 0 ? (
               <p style={{ color: 'var(--text-secondary)' }}>No common fields found</p>
             ) : (
               <>
-                {Object.keys(comparison.structuralDifferences || {}).length > 0 && (
+                {Object.keys(activeComparison.structuralDifferences || {}).length > 0 && (
                   <div style={{ 
                     padding: '0.75rem', 
                     backgroundColor: 'rgba(245, 158, 11, 0.1)', 
@@ -401,66 +872,12 @@ function ComparisonView({ comparison, files }) {
                   </div>
                 )}
                 <HierarchicalFieldList
-                  fields={comparison.commonFields}
+                  fields={activeComparison.commonFields}
                   expandedPaths={expandedPaths}
                   setExpandedPaths={setExpandedPaths}
                   type="common"
                 />
               </>
-            )}
-          </div>
-        )}
-
-        {activeTab === 'differences' && (
-          <div>
-            <h3 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
-              Field variations across files
-            </h3>
-            {Object.entries(comparison.fieldDifferences).length === 0 ? (
-              <p style={{ color: 'var(--text-secondary)' }}>No differences found</p>
-            ) : (
-              <div style={{ display: 'grid', gap: '1rem' }}>
-                {Object.entries(comparison.fieldDifferences).map(([fieldName, diff]) => {
-                  // Only show fields that have differences
-                  if (diff.absentIn.length === 0) return null;
-
-                  return (
-                    <div
-                      key={fieldName}
-                      style={{
-                        padding: '1rem',
-                        backgroundColor: 'var(--bg-color)',
-                        borderRadius: '0.5rem',
-                        border: '1px solid var(--border-color)',
-                      }}
-                    >
-                      <h4 style={{ marginBottom: '0.5rem', color: 'var(--text-primary)' }}>
-                        <code>{fieldName}</code>
-                      </h4>
-                      <div style={{ fontSize: '0.875rem', display: 'grid', gap: '0.5rem' }}>
-                        {diff.presentIn.length > 0 && (
-                          <p>
-                            <strong>Present in:</strong> {diff.presentIn.join(', ')}
-                          </p>
-                        )}
-                        {diff.absentIn.length > 0 && (
-                          <p style={{ color: 'var(--danger-color)' }}>
-                            <strong>Missing from:</strong> {diff.absentIn.join(', ')}
-                          </p>
-                        )}
-                        {Object.keys(diff.depthVariations).length > 1 && (
-                          <p style={{ color: 'var(--warning-color)' }}>
-                            <strong>Depth variations:</strong>{' '}
-                            {Object.entries(diff.depthVariations)
-                              .map(([depth, files]) => `Depth ${depth}: ${files.join(', ')}`)
-                              .join('; ')}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
             )}
           </div>
         )}
@@ -471,18 +888,18 @@ function ComparisonView({ comparison, files }) {
               Fields unique to each file (not present in any other file)
             </h3>
             <div className="comparison-container">
-              {files.map((file) => (
+              {comparisonFiles.map((file) => (
                 <div key={file.id}>
                   <h4 style={{ marginBottom: '1rem', color: 'var(--text-primary)' }}>
                     {file.filename}
                   </h4>
-                  {comparison.uniqueFields[file.filename].length === 0 ? (
+                  {(activeComparison.uniqueFields[file.filename] || []).length === 0 ? (
                     <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
                       No unique fields
                     </p>
                   ) : (
                     <HierarchicalFieldList
-                      fields={comparison.uniqueFields[file.filename]}
+                      fields={activeComparison.uniqueFields[file.filename]}
                       expandedPaths={expandedPaths}
                       setExpandedPaths={setExpandedPaths}
                       type="unique"

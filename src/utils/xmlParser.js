@@ -192,6 +192,15 @@ export function compareFields(fileDataArray) {
       commonFields: [],
       uniqueFields: {},
       fieldDifferences: {},
+      aggregation: {
+        filesCount: 0,
+        totalFieldInstances: 0,
+        averageFieldsPerFile: 0,
+        uniqueFieldNames: 0,
+        uniqueFieldPaths: 0,
+        fieldNameSummary: [],
+        fieldPathSummary: [],
+      },
     };
   }
 
@@ -209,6 +218,86 @@ export function compareFields(fileDataArray) {
   fileDataArray.forEach(fileData => {
     fileData.fields.forEach(field => {
       allFieldPaths.add(field.path);
+    });
+  });
+
+  // Aggregated counts for summary view
+  const totalFiles = fileDataArray.length;
+  let totalFieldInstances = 0;
+  const fieldNameStats = new Map();
+  const fieldPathStats = new Map();
+
+  // Pre-create stats entries when seeing fields
+  const ensureFieldNameEntry = (field) => {
+    if (!fieldNameStats.has(field.name)) {
+      fieldNameStats.set(field.name, {
+        fieldName: field.name,
+        filesWithField: new Set(),
+        totalOccurrences: 0,
+        occurrencesPerFile: {},
+        paths: new Set(),
+        depths: new Set(),
+      });
+    }
+    const entry = fieldNameStats.get(field.name);
+    entry.paths.add(field.path);
+    entry.depths.add(field.depth);
+    return entry;
+  };
+
+  const ensureFieldPathEntry = (field) => {
+    if (!fieldPathStats.has(field.path)) {
+      fieldPathStats.set(field.path, {
+        path: field.path,
+        fieldName: field.name,
+        depth: field.depth,
+        filesWithPath: new Set(),
+        totalOccurrences: 0,
+        occurrencesPerFile: {},
+      });
+    }
+    return fieldPathStats.get(field.path);
+  };
+
+  fileDataArray.forEach(fileData => {
+    const perFileNameCounts = new Map();
+    const perFilePathCounts = new Map();
+
+    fileData.fields.forEach(field => {
+      const occurrences = field.occurrences || 1;
+      totalFieldInstances += occurrences;
+
+      const nameEntry = ensureFieldNameEntry(field);
+      nameEntry.totalOccurrences += occurrences;
+
+      const pathEntry = ensureFieldPathEntry(field);
+      pathEntry.totalOccurrences += occurrences;
+
+      perFileNameCounts.set(
+        field.name,
+        (perFileNameCounts.get(field.name) || 0) + occurrences
+      );
+
+      perFilePathCounts.set(
+        field.path,
+        (perFilePathCounts.get(field.path) || 0) + occurrences
+      );
+    });
+
+    perFileNameCounts.forEach((occurrences, fieldName) => {
+      const entry = fieldNameStats.get(fieldName);
+      if (entry) {
+        entry.filesWithField.add(fileData.filename);
+        entry.occurrencesPerFile[fileData.filename] = occurrences;
+      }
+    });
+
+    perFilePathCounts.forEach((occurrences, fieldPath) => {
+      const entry = fieldPathStats.get(fieldPath);
+      if (entry) {
+        entry.filesWithPath.add(fileData.filename);
+        entry.occurrencesPerFile[fileData.filename] = occurrences;
+      }
     });
   });
 
@@ -371,6 +460,42 @@ export function compareFields(fileDataArray) {
     fieldDifferences,
     structuralDifferences: Object.fromEntries(structuralDifferences),
     totalUniqueFields: allFieldNames.size,
+    aggregation: {
+      filesCount: totalFiles,
+      totalFieldInstances,
+      averageFieldsPerFile: totalFiles > 0 ? totalFieldInstances / totalFiles : 0,
+      uniqueFieldNames: fieldNameStats.size,
+      uniqueFieldPaths: fieldPathStats.size,
+      fieldNameSummary: Array.from(fieldNameStats.values()).map(entry => ({
+        fieldName: entry.fieldName,
+        filesWithField: entry.filesWithField.size,
+        filesMissingField: totalFiles - entry.filesWithField.size,
+        presencePercent: totalFiles > 0 ? (entry.filesWithField.size / totalFiles) * 100 : 0,
+        totalOccurrences: entry.totalOccurrences,
+        averageOccurrencesPerFile: entry.filesWithField.size > 0 ? entry.totalOccurrences / entry.filesWithField.size : 0,
+        samplePaths: Array.from(entry.paths).slice(0, 3),
+        depths: (() => {
+          const depthValues = Array.from(entry.depths);
+          if (depthValues.length === 0) {
+            return { min: 0, max: 0 };
+          }
+          return {
+            min: Math.min(...depthValues),
+            max: Math.max(...depthValues),
+          };
+        })(),
+      })),
+      fieldPathSummary: Array.from(fieldPathStats.values()).map(entry => ({
+        path: entry.path,
+        fieldName: entry.fieldName,
+        depth: entry.depth,
+        filesWithPath: entry.filesWithPath.size,
+        filesMissingPath: totalFiles - entry.filesWithPath.size,
+        presencePercent: totalFiles > 0 ? (entry.filesWithPath.size / totalFiles) * 100 : 0,
+        totalOccurrences: entry.totalOccurrences,
+        averageOccurrencesPerFile: entry.filesWithPath.size > 0 ? entry.totalOccurrences / entry.filesWithPath.size : 0,
+      })),
+    },
   };
 }
 
@@ -476,10 +601,95 @@ export function comparisonToCSV(comparison, mergedFields = null) {
  * Export comparison results to Excel with multiple sheets
  * @param {Object} comparison - Comparison results from compareFields
  * @param {Array} mergedFields - Optional merged fields array from all files
+ * @param {Object} options - Additional export options
  * @returns {Blob} Excel file blob
  */
-export function comparisonToExcel(comparison, mergedFields = null) {
+export function comparisonToExcel(comparison, mergedFields = null, options = {}) {
   const workbook = XLSX.utils.book_new();
+  const MAX_EXCEL_TEXT_LENGTH = 32000;
+
+  const aggregation = comparison?.aggregation || {
+    filesCount: 0,
+    totalFieldInstances: 0,
+    averageFieldsPerFile: 0,
+    uniqueFieldNames: 0,
+    uniqueFieldPaths: 0,
+    fieldNameSummary: [],
+    fieldPathSummary: [],
+  };
+
+  const clampExcelText = (value) => {
+    if (typeof value !== 'string') {
+      return value;
+    }
+    if (value.length <= MAX_EXCEL_TEXT_LENGTH) {
+      return value;
+    }
+    return `${value.slice(0, MAX_EXCEL_TEXT_LENGTH - 1)}…`;
+  };
+
+  // Summary sheet
+  const summarySheetData = [];
+
+  const { filtersSummary = null, filteredFilesCount = null, totalFilesCount = null } = options;
+
+  if (filtersSummary) {
+    summarySheetData.push(['Filters Applied', clampExcelText(filtersSummary)]);
+  } else if (filtersSummary === '') {
+    summarySheetData.push(['Filters Applied', 'None (all files)']);
+  } else if (filtersSummary === null) {
+    // No filters row added when null (legacy behaviour)
+  }
+
+  if (totalFilesCount != null && filteredFilesCount != null) {
+    summarySheetData.push(['Files Included in Export', `${filteredFilesCount} of ${totalFilesCount}`]);
+  }
+
+  if (summarySheetData.length > 0) {
+    summarySheetData.push([]);
+  }
+
+  summarySheetData.push(
+    ['Metric', 'Value'],
+    ['Files Compared', aggregation.filesCount ?? 0],
+    ['Total Field Instances', aggregation.totalFieldInstances ?? 0],
+    ['Unique Field Names', aggregation.uniqueFieldNames ?? 0],
+    ['Unique Field Paths', aggregation.uniqueFieldPaths ?? 0],
+    [
+      'Average Fields per File',
+      aggregation.averageFieldsPerFile ? Number(aggregation.averageFieldsPerFile.toFixed(2)) : 0,
+    ],
+  );
+
+  summarySheetData.push([]);
+  if ((aggregation.fieldNameSummary || []).length > 0) {
+    summarySheetData.push([
+      'Field Name',
+      'Files With Field',
+      'Files Missing',
+      'Presence %',
+      'Total Occurrences',
+      'Avg Occurrences per File',
+    ]);
+  }
+
+  const fieldCoverageRows = (aggregation.fieldNameSummary || []).map(entry => ([
+      clampExcelText(entry.fieldName || ''),
+      entry.filesWithField ?? 0,
+      entry.filesMissingField ?? 0,
+      entry.presencePercent ? Number(entry.presencePercent.toFixed(1)) : 0,
+      entry.totalOccurrences ?? 0,
+      entry.averageOccurrencesPerFile ? Number(entry.averageOccurrencesPerFile.toFixed(2)) : 0,
+    ]));
+
+  if (fieldCoverageRows.length === 0) {
+    summarySheetData.push(['(no data)', '', '', '', '', '']);
+  } else {
+    summarySheetData.push(...fieldCoverageRows);
+  }
+
+  const summaryWorksheet = XLSX.utils.aoa_to_sheet(summarySheetData);
+  XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Summary');
 
   // Helper function to create a worksheet from array of objects
   const createWorksheet = (data, sheetName) => {
@@ -496,10 +706,9 @@ export function comparisonToExcel(comparison, mergedFields = null) {
   // Merged View sheet
   if (mergedFields && mergedFields.length > 0) {
     const mergedData = mergedFields.map(field => ({
-      'Field Name': field.name || '',
-      'Path': field.path || '',
+      'Field Name': clampExcelText(field.name || ''),
+      'Path': clampExcelText(field.path || ''),
       'Depth': field.depth !== undefined ? field.depth : 0,
-      'Present In Files': field.presentInFiles ? field.presentInFiles.join('; ') : '',
       'Files Count': field.presentInFiles ? field.presentInFiles.length : 0,
     }));
     createWorksheet(mergedData, 'Merged View');
@@ -507,35 +716,34 @@ export function comparisonToExcel(comparison, mergedFields = null) {
 
   // Common Fields sheet
   const commonData = comparison.commonFields.map(field => ({
-    'Field Name': typeof field === 'string' ? field : field.name,
-    'Path': typeof field === 'string' ? field : field.path,
+    'Field Name': clampExcelText(typeof field === 'string' ? field : field.name),
+    'Path': clampExcelText(typeof field === 'string' ? field : field.path),
     'Depth': typeof field === 'string' ? 0 : field.depth,
     'Structural Difference': typeof field === 'object' && field.structuralDifference ? 'Yes' : 'No',
-    'Alternative Paths': typeof field === 'object' && field.alternativePaths ? field.alternativePaths.join('; ') : '',
+    'Alternative Paths': clampExcelText(
+      typeof field === 'object' && field.alternativePaths ? field.alternativePaths.join('; ') : ''
+    ),
   }));
   createWorksheet(commonData, 'Common Fields');
 
   // Unique Fields sheet
   const uniqueData = [];
-  Object.entries(comparison.uniqueFields).forEach(([filename, fields]) => {
+  let uniqueGroupIndex = 1;
+  Object.entries(comparison.uniqueFields).forEach(([, fields]) => {
+    if (fields.length === 0) {
+      return;
+    }
     fields.forEach(field => {
       uniqueData.push({
-        'File Name': filename,
-        'Field Name': typeof field === 'string' ? field : field.name,
-        'Path': typeof field === 'string' ? field : field.path,
+        'File Group #': uniqueGroupIndex,
+        'Field Name': clampExcelText(typeof field === 'string' ? field : field.name),
+        'Path': clampExcelText(typeof field === 'string' ? field : field.path),
         'Depth': typeof field === 'string' ? 0 : field.depth,
       });
     });
+    uniqueGroupIndex += 1;
   });
   createWorksheet(uniqueData, 'Unique Fields');
-
-  // Field Differences sheet
-  const differencesData = Object.values(comparison.fieldDifferences).map(diff => ({
-    'Field Name': diff.fieldName,
-    'Present In': diff.presentIn.join('; '),
-    'Absent In': diff.absentIn.join('; '),
-  }));
-  createWorksheet(differencesData, 'Field Differences');
 
   // Generate Excel file
   const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
