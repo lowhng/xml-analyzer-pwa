@@ -46,6 +46,15 @@ function App() {
   const [files, setFiles] = useState([]);
   const [activeTab, setActiveTab] = useState('single');
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  
+  // Persist comparison filters across tab switches
+  const createEmptyFilter = () => ({
+    id: `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    field: '',
+    value: '',
+    caseSensitive: false,
+  });
+  const [comparisonFilters, setComparisonFilters] = useState(() => [createEmptyFilter()]);
 
   // Register service worker for PWA
   useEffect(() => {
@@ -207,7 +216,12 @@ function App() {
               )}
 
               {activeTab === 'comparison' && comparison && (
-                <ComparisonView comparison={comparison} files={files} />
+                <ComparisonView 
+                  comparison={comparison} 
+                  files={files}
+                  filters={comparisonFilters}
+                  setFilters={setComparisonFilters}
+                />
               )}
             </>
           )}
