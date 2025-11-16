@@ -178,7 +178,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
   );
 }
 
-function ComparisonView({ comparison, files }) {
+function ComparisonView({ comparison, files, filters: filtersProp, setFilters: setFiltersProp }) {
   const [activeTab, setActiveTab] = useState('summary');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
   const [summaryMode, setSummaryMode] = useState('hierarchical');
@@ -193,7 +193,11 @@ function ComparisonView({ comparison, files }) {
     caseSensitive: false,
   });
   const MAX_FILTERS = 5;
-  const [filters, setFilters] = useState(() => [createEmptyFilter()]);
+  // Use local state as fallback if props are not provided (for backward compatibility)
+  const [localFilters, setLocalFilters] = useState(() => [createEmptyFilter()]);
+  // Use filters from props if provided, otherwise fall back to local state
+  const filters = filtersProp !== undefined ? filtersProp : localFilters;
+  const setFilters = setFiltersProp !== undefined ? setFiltersProp : setLocalFilters;
 
   const activeFilters = useMemo(() => {
     return filters
