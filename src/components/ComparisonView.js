@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { comparisonToExcel, compareFields } from '../utils/xmlParser';
+import { comparisonToExcel, compareFields, mergeFieldsFromFiles } from '../utils/xmlParser';
 
 // Component to render hierarchical field list
 function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles }) {
@@ -117,11 +117,11 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
             {!hasChildren && <span style={{ width: '1.75rem', display: 'inline-block' }} />}
             <code>{field.name}</code>
             {field.presentInFiles && totalFiles && field.presentInFiles.length < totalFiles && (
-              <span 
-                style={{ 
-                  fontSize: '0.75rem', 
+              <span
+                style={{
+                  fontSize: '0.75rem',
                   fontWeight: '600',
-                  color: 'var(--primary-color)', 
+                  color: 'var(--primary-color)',
                   backgroundColor: 'rgba(59, 130, 246, 0.1)',
                   padding: '0.125rem 0.375rem',
                   borderRadius: '0.25rem',
@@ -136,10 +136,10 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
               </span>
             )}
             {field.structuralDifference && (
-              <span 
-                style={{ 
-                  fontSize: '0.75rem', 
-                  color: 'var(--warning-color)', 
+              <span
+                style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--warning-color)',
                   fontWeight: 'bold',
                   marginLeft: '0.25rem',
                   cursor: 'help'
@@ -531,101 +531,10 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
 
   // Merge all fields from all files, grouping by similar structure
   // For each parent path, show all unique field names from all files
+  // Merge all fields from all files, grouping by similar structure
+  // For each parent path, show all unique field names from all files
   const mergedFields = useMemo(() => {
-    if (comparisonFiles.length === 0) return [];
-
-    // Track all unique field names under each parent path
-    // parentPath -> Map of fieldName -> { field info, presentInFiles }
-    const parentFieldMap = new Map();
-    
-    // First pass: collect all fields grouped by parent path and field name
-    comparisonFiles.forEach(file => {
-      file.fields.forEach(field => {
-        const parentPath = field.parentPath || '';
-        const fieldName = field.name;
-        
-        if (!parentFieldMap.has(parentPath)) {
-          parentFieldMap.set(parentPath, new Map());
-        }
-        
-        const fieldsAtParent = parentFieldMap.get(parentPath);
-        if (!fieldsAtParent.has(fieldName)) {
-          // First time seeing this field name under this parent
-          fieldsAtParent.set(fieldName, {
-            name: fieldName,
-            path: field.path,
-            depth: field.depth,
-            parentPath: parentPath,
-            hasChildren: field.hasChildren,
-            childCount: field.childCount,
-            orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
-            presentInFiles: [file.filename],
-            isNested: field.isNested,
-            hasText: field.hasText,
-            textContent: field.textContent,
-            attributes: field.attributes,
-            occurrences: field.occurrences,
-          });
-        } else {
-          // Field name already exists under this parent, just add to presentInFiles
-          const existing = fieldsAtParent.get(fieldName);
-          if (!existing.presentInFiles.includes(file.filename)) {
-            existing.presentInFiles.push(file.filename);
-          }
-          // Update hasChildren if this file has children (field has children if any file has children)
-          if (field.hasChildren) {
-            existing.hasChildren = true;
-          }
-        }
-      });
-    });
-
-    // Second pass: build the merged field list maintaining structure
-    // Use reference file (first file) to determine the order and structure
-    const merged = [];
-    const processedFieldKeys = new Set(); // Track parentPath + fieldName combinations
-    
-    // Build a function to recursively process fields
-    const processFieldsAtDepth = (depth, parentPath) => {
-      const fieldsAtParent = parentFieldMap.get(parentPath) || new Map();
-      const fieldEntries = Array.from(fieldsAtParent.entries());
-      
-      // Sort by order index from reference file if available
-      fieldEntries.sort(([nameA, fieldA], [nameB, fieldB]) => {
-        // Try to get order from reference file
-        const refFile = comparisonFiles[0];
-        const refFieldA = refFile.fields.find(f => 
-          f.name === nameA && (f.parentPath || '') === parentPath
-        );
-        const refFieldB = refFile.fields.find(f => 
-          f.name === nameB && (f.parentPath || '') === parentPath
-        );
-        
-        const orderA = refFieldA?.orderIndex ?? fieldA.orderIndex;
-        const orderB = refFieldB?.orderIndex ?? fieldB.orderIndex;
-        
-        if (orderA !== orderB) return orderA - orderB;
-        return nameA.localeCompare(nameB);
-      });
-      
-      fieldEntries.forEach(([fieldName, fieldInfo]) => {
-        const key = `${parentPath}|${fieldName}`;
-        if (!processedFieldKeys.has(key)) {
-          processedFieldKeys.add(key);
-          merged.push(fieldInfo);
-          
-          // Recursively process children if this field has children
-          if (fieldInfo.hasChildren) {
-            processFieldsAtDepth(depth + 1, fieldInfo.path);
-          }
-        }
-      });
-    };
-    
-    // Start processing from root (empty parent path)
-    processFieldsAtDepth(0, '');
-    
-    return merged;
+    return mergeFieldsFromFiles(comparisonFiles);
   }, [comparisonFiles]);
 
   const collectExpandablePaths = useCallback((fields) => {
@@ -1181,16 +1090,16 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
               <p style={{ color: 'var(--text-secondary)' }}>No fields to display</p>
             ) : (
               <>
-                <div style={{ 
-                  padding: '0.75rem', 
-                  backgroundColor: 'rgba(59, 130, 246, 0.1)', 
-                  border: '1px solid var(--primary-color)', 
-                  borderRadius: '0.5rem', 
+                <div style={{
+                  padding: '0.75rem',
+                  backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                  border: '1px solid var(--primary-color)',
+                  borderRadius: '0.5rem',
                   marginBottom: '1rem',
                   fontSize: '0.875rem'
                 }}>
-                  <strong style={{ color: 'var(--primary-color)' }}>ℹ️ Note:</strong> This view shows all unique fields from all files, grouped by their parent structure. 
-                  Fields marked with (X/Y files) appear in X out of Y files. 
+                  <strong style={{ color: 'var(--primary-color)' }}>ℹ️ Note:</strong> This view shows all unique fields from all files, grouped by their parent structure.
+                  Fields marked with (X/Y files) appear in X out of Y files.
                   Hover over the file count to see which files contain each field.
                 </div>
                 <div className="tree-controls" style={{ marginBottom: '1rem' }}>
@@ -1238,16 +1147,16 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
             ) : (
               <>
                 {Object.keys(activeComparison.structuralDifferences || {}).length > 0 && (
-                  <div style={{ 
-                    padding: '0.75rem', 
-                    backgroundColor: 'rgba(245, 158, 11, 0.1)', 
-                    border: '1px solid var(--warning-color)', 
-                    borderRadius: '0.5rem', 
+                  <div style={{
+                    padding: '0.75rem',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    border: '1px solid var(--warning-color)',
+                    borderRadius: '0.5rem',
                     marginBottom: '1rem',
                     fontSize: '0.875rem'
                   }}>
-                    <strong style={{ color: 'var(--warning-color)' }}>⚠️ Note:</strong> Some fields have structural differences. 
-                    Fields marked with ⚠️ exist in all files but at different paths/positions. 
+                    <strong style={{ color: 'var(--warning-color)' }}>⚠️ Note:</strong> Some fields have structural differences.
+                    Fields marked with ⚠️ exist in all files but at different paths/positions.
                     Hover over the warning icon to see alternative paths.
                   </div>
                 )}

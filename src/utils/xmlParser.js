@@ -857,3 +857,105 @@ export function getXMLStatistics(fields) {
 
   return stats;
 }
+
+/**
+ * Merge fields from multiple files, grouping by similar structure
+ * @param {Array} files - Array of file objects with fields
+ * @returns {Array} Merged fields array
+ */
+export function mergeFieldsFromFiles(files) {
+  if (!files || files.length === 0) return [];
+
+  // Track all unique field names under each parent path
+  // parentPath -> Map of fieldName -> { field info, presentInFiles }
+  const parentFieldMap = new Map();
+  
+  // First pass: collect all fields grouped by parent path and field name
+  files.forEach(file => {
+    file.fields.forEach(field => {
+      const parentPath = field.parentPath || '';
+      const fieldName = field.name;
+      
+      if (!parentFieldMap.has(parentPath)) {
+        parentFieldMap.set(parentPath, new Map());
+      }
+      
+      const fieldsAtParent = parentFieldMap.get(parentPath);
+      if (!fieldsAtParent.has(fieldName)) {
+        // First time seeing this field name under this parent
+        fieldsAtParent.set(fieldName, {
+          name: fieldName,
+          path: field.path,
+          depth: field.depth,
+          parentPath: parentPath,
+          hasChildren: field.hasChildren,
+          childCount: field.childCount,
+          orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
+          presentInFiles: [file.filename],
+          isNested: field.isNested,
+          hasText: field.hasText,
+          textContent: field.textContent,
+          attributes: field.attributes,
+          occurrences: field.occurrences,
+        });
+      } else {
+        // Field name already exists under this parent, just add to presentInFiles
+        const existing = fieldsAtParent.get(fieldName);
+        if (!existing.presentInFiles.includes(file.filename)) {
+          existing.presentInFiles.push(file.filename);
+        }
+        // Update hasChildren if this file has children (field has children if any file has children)
+        if (field.hasChildren) {
+          existing.hasChildren = true;
+        }
+      }
+    });
+  });
+
+  // Second pass: build the merged field list maintaining structure
+  // Use reference file (first file) to determine the order and structure
+  const merged = [];
+  const processedFieldKeys = new Set(); // Track parentPath + fieldName combinations
+  
+  // Build a function to recursively process fields
+  const processFieldsAtDepth = (depth, parentPath) => {
+    const fieldsAtParent = parentFieldMap.get(parentPath) || new Map();
+    const fieldEntries = Array.from(fieldsAtParent.entries());
+    
+    // Sort by order index from reference file if available
+    fieldEntries.sort(([nameA, fieldA], [nameB, fieldB]) => {
+      // Try to get order from reference file
+      const refFile = files[0];
+      const refFieldA = refFile.fields.find(f => 
+        f.name === nameA && (f.parentPath || '') === parentPath
+      );
+      const refFieldB = refFile.fields.find(f => 
+        f.name === nameB && (f.parentPath || '') === parentPath
+      );
+      
+      const orderA = refFieldA?.orderIndex ?? fieldA.orderIndex;
+      const orderB = refFieldB?.orderIndex ?? fieldB.orderIndex;
+      
+      if (orderA !== orderB) return orderA - orderB;
+      return nameA.localeCompare(nameB);
+    });
+    
+    fieldEntries.forEach(([fieldName, fieldInfo]) => {
+      const key = `${parentPath}|${fieldName}`;
+      if (!processedFieldKeys.has(key)) {
+        processedFieldKeys.add(key);
+        merged.push(fieldInfo);
+        
+        // Recursively process children if this field has children
+        if (fieldInfo.hasChildren) {
+          processFieldsAtDepth(depth + 1, fieldInfo.path);
+        }
+      }
+    });
+  };
+  
+  // Start processing from root (empty parent path)
+  processFieldsAtDepth(0, '');
+  
+  return merged;
+}
