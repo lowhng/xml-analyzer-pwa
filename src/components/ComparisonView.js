@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { comparisonToExcel, compareFields, mergeFieldsFromFiles } from '../utils/xmlParser';
+import { comparisonToExcel, compareFields, mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath } from '../utils/xmlParser';
 
 // Component to render hierarchical field list
-function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles }) {
+function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles, prefixToRemove = '' }) {
   const toggleExpand = (path) => {
     const newExpanded = new Set(expandedPaths);
     if (newExpanded.has(path)) {
@@ -115,7 +115,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
               </button>
             )}
             {!hasChildren && <span style={{ width: '1.75rem', display: 'inline-block' }} />}
-            <code>{field.name}</code>
+            <code>{removePrefixFromFieldName(field.name, prefixToRemove)}</code>
             {field.presentInFiles && totalFiles && field.presentInFiles.length < totalFiles && (
               <span
                 style={{
@@ -150,7 +150,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
                   if (field.alternativePathsWithFiles && field.alternativePathsWithFiles.length > 0) {
                     parts.push('\n\nAlternative paths:');
                     field.alternativePathsWithFiles.forEach(({ path, files }) => {
-                      parts.push(`\n  • ${path} (in: ${files.join(', ')})`);
+                      parts.push(`\n  • ${removePrefixFromPath(path, prefixToRemove)} (in: ${files.join(', ')})`);
                     });
                   }
                   return parts.join('');
@@ -161,7 +161,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
             )}
             {field.path !== field.name && (
               <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                ({field.path})
+                ({removePrefixFromPath(field.path, prefixToRemove)})
               </span>
             )}
           </div>
@@ -178,7 +178,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
   );
 }
 
-function ComparisonView({ comparison, files, filters: filtersProp, setFilters: setFiltersProp }) {
+function ComparisonView({ comparison, files, filters: filtersProp, setFilters: setFiltersProp, prefixToRemove = '', setPrefixToRemove }) {
   const [activeTab, setActiveTab] = useState('summary');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
   const [summaryMode, setSummaryMode] = useState('hierarchical');
@@ -233,13 +233,15 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
       file.fields.forEach(field => {
         const textValue = field.textContent ? field.textContent.trim() : '';
         if (textValue.length > 0) {
-          fieldNames.add(field.name);
+          // Normalize field name for comparison (remove prefix if specified)
+          const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+          fieldNames.add(normalizedName);
         }
       });
     });
 
     return Array.from(fieldNames).sort((a, b) => a.localeCompare(b));
-  }, [files]);
+  }, [files, prefixToRemove]);
 
   const filteredFiles = useMemo(() => {
     if (!isFilterActive) {
@@ -253,7 +255,9 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
           : filterCondition.trimmedValue.toLowerCase();
 
         return file.fields.some(field => {
-          if (field.name !== filterCondition.field) {
+          // Normalize field name for comparison
+          const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+          if (normalizedFieldName !== filterCondition.field) {
             return false;
           }
 
@@ -267,7 +271,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
         });
       })
     );
-  }, [files, isFilterActive, activeFilters]);
+  }, [files, isFilterActive, activeFilters, prefixToRemove]);
 
   const comparisonFiles = filteredFiles;
 
@@ -275,8 +279,8 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     if (!isFilterActive) {
       return comparison;
     }
-    return compareFields(comparisonFiles);
-  }, [comparison, comparisonFiles, isFilterActive]);
+    return compareFields(comparisonFiles, prefixToRemove);
+  }, [comparison, comparisonFiles, isFilterActive, prefixToRemove]);
 
   const aggregation = useMemo(() => {
     if (!activeComparison || !activeComparison.aggregation) {
@@ -503,7 +507,8 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     const structure = {};
 
     fields.forEach(field => {
-      const segments = field.path.split(' > ');
+      const path = removePrefixFromPath(field.path, prefixToRemove);
+      const segments = path.split(' > ');
       let currentLevel = structure;
 
       segments.forEach((segment, index) => {
@@ -534,8 +539,8 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
   // Merge all fields from all files, grouping by similar structure
   // For each parent path, show all unique field names from all files
   const mergedFields = useMemo(() => {
-    return mergeFieldsFromFiles(comparisonFiles);
-  }, [comparisonFiles]);
+    return mergeFieldsFromFiles(comparisonFiles, prefixToRemove);
+  }, [comparisonFiles, prefixToRemove]);
 
   const collectExpandablePaths = useCallback((fields) => {
     const paths = new Set();
@@ -583,6 +588,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
       filtersSummary: filterSummaryForExport,
       filteredFilesCount: comparisonFiles.length,
       totalFilesCount: files.length,
+      prefixToRemove: prefixToRemove,
     });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
@@ -759,6 +765,29 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
           >
             Clear Filters
           </button>
+          <div className="filter-prefix-input" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <label htmlFor="prefix-to-remove" style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>
+              Remove Prefix:
+            </label>
+            <input
+              id="prefix-to-remove"
+              type="text"
+              placeholder="e.g., ns0:"
+              value={prefixToRemove}
+              onChange={(e) => {
+                if (setPrefixToRemove) {
+                  setPrefixToRemove(e.target.value);
+                }
+              }}
+              style={{
+                padding: '0.5rem',
+                border: '1px solid var(--border-color)',
+                borderRadius: '0.5rem',
+                fontSize: '0.875rem',
+                width: '120px',
+              }}
+            />
+          </div>
         </div>
 
         {isFilterActive && (
@@ -768,7 +797,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                 No files match the selected filters:{' '}
                 {activeFilters.map(filter => (
                   <span key={filter.id}>
-                    <code>{filter.field}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                    <code>{removePrefixFromFieldName(filter.field, prefixToRemove)}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
                   </span>
                 )).reduce((acc, element, idx) => (
                   idx === 0 ? [element] : [...acc, ', ', element]
@@ -779,7 +808,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                 Showing {comparisonFiles.length} of {files.length} files where{' '}
                 {activeFilters.map(filter => (
                   <span key={filter.id}>
-                    <code>{filter.field}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                    <code>{removePrefixFromFieldName(filter.field, prefixToRemove)}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
                   </span>
                 )).reduce((acc, element, idx) => (
                   idx === 0 ? [element] : [...acc, ' and ', element]
@@ -956,7 +985,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                           <span className={`summary-row-caret ${isExpanded ? 'expanded' : ''}`} aria-hidden="true">
                             {isExpanded ? '▾' : '▸'}
                           </span>
-                          <code>{item.fieldName}</code>
+                          <code>{removePrefixFromFieldName(item.fieldName, prefixToRemove)}</code>
                           <span className="summary-field-pill">
                             {hasValues
                               ? `${item.uniqueValuesCount} value${item.uniqueValuesCount === 1 ? '' : 's'}`
@@ -982,7 +1011,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                           {item.samplePaths && item.samplePaths.length > 0 ? (
                             item.samplePaths.map(path => (
                               <span key={path} className="summary-path-chip">
-                                {path}
+                                {removePrefixFromPath(path, prefixToRemove)}
                               </span>
                             ))
                           ) : (
@@ -1004,7 +1033,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
 
                           {summaryMode === 'hierarchical' && item.path && (
                             <div className="summary-path-detail">
-                              <strong>Path:</strong> {item.path}
+                              <strong>Path:</strong> {removePrefixFromPath(item.path, prefixToRemove)}
                             </div>
                           )}
 
@@ -1126,6 +1155,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                   setExpandedPaths={setExpandedPaths}
                   type="merged"
                   totalFiles={comparisonFiles.length}
+                  prefixToRemove={prefixToRemove}
                 />
               </>
             )}
@@ -1183,6 +1213,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                   expandedPaths={expandedPaths}
                   setExpandedPaths={setExpandedPaths}
                   type="common"
+                  prefixToRemove={prefixToRemove}
                 />
               </>
             )}
@@ -1210,6 +1241,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                       expandedPaths={expandedPaths}
                       setExpandedPaths={setExpandedPaths}
                       type="unique"
+                      prefixToRemove={prefixToRemove}
                     />
                   </div>
                 ))}

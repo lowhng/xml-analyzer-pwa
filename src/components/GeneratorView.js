@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { mergeFieldsFromFiles } from '../utils/xmlParser';
+import { mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath } from '../utils/xmlParser';
 
-function GeneratorView({ files, comparison }) {
+function GeneratorView({ files, comparison, prefixToRemove = '' }) {
     const [sourceType, setSourceType] = useState('merged'); // 'merged', 'common', or fileId
     const [fields, setFields] = useState([]);
     const [generatedXML, setGeneratedXML] = useState('');
@@ -22,43 +22,138 @@ function GeneratorView({ files, comparison }) {
     useEffect(() => {
         let initialFields = [];
         if (sourceType === 'merged') {
-            initialFields = mergeFieldsFromFiles(files);
+            initialFields = mergeFieldsFromFiles(files, prefixToRemove) || [];
         } else if (sourceType === 'common') {
             // For common fields, we need to map them to a structure similar to merged fields
             // but only including those in comparison.commonFields
-            if (comparison && comparison.commonFields) {
+            if (comparison && comparison.commonFields && Array.isArray(comparison.commonFields)) {
                 initialFields = comparison.commonFields.map(f => ({
                     ...f,
                     // Ensure we have necessary properties for editing
                     enabled: true,
-                    customValue: '',
+                    customValue: f.textContent || '',
                     // If it's a string (legacy support), convert to object
                     ...(typeof f === 'string' ? { name: f, path: f, depth: 0 } : {})
                 }));
             }
         } else {
-            // Specific file
-            const file = files.find(f => f.id === sourceType);
-            if (file) {
+            // Specific file - sourceType is a string from select, but file.id might be a number
+            const fileId = isNaN(sourceType) ? sourceType : parseFloat(sourceType);
+            const file = files.find(f => {
+                // Handle both string and number IDs
+                return String(f.id) === String(sourceType) || f.id === fileId;
+            });
+            if (file && file.fields && Array.isArray(file.fields)) {
                 initialFields = file.fields.map(f => ({
                     ...f,
+                    name: removePrefixFromFieldName(f.name, prefixToRemove),
+                    path: removePrefixFromPath(f.path, prefixToRemove),
+                    parentPath: removePrefixFromPath(f.parentPath || '', prefixToRemove),
                     enabled: true,
                     customValue: f.textContent || ''
                 }));
             }
         }
 
-        // Add UI state properties
-        const fieldsWithState = initialFields.map(f => ({
-            ...f,
-            enabled: true,
-            customValue: f.textContent || '',
-            // Ensure unique ID for React keys if not present
-            uiId: f.path || Math.random().toString(36).substr(2, 9)
-        }));
+        // Add UI state properties and ensure depth matches path structure
+        const fieldsWithState = initialFields.map(f => {
+            // Calculate depth from path structure to ensure consistency
+            const pathDepth = f.path ? f.path.split(' > ').length - 1 : 0;
+            
+            // For leaf nodes (fields without children), always provide customValue
+            // so they can be edited even if they don't currently have text content
+            const isLeafNode = !f.hasChildren;
+            const customValue = f.customValue !== undefined 
+                ? f.customValue 
+                : (isLeafNode ? (f.textContent || '') : (f.textContent || ''));
+            
+            return {
+                ...f,
+                enabled: f.enabled !== undefined ? f.enabled : true,
+                customValue: customValue,
+                // Ensure unique ID for React keys if not present
+                uiId: f.path || Math.random().toString(36).substr(2, 9),
+                // Ensure depth matches path structure
+                depth: pathDepth
+            };
+        });
 
         setFields(fieldsWithState);
-    }, [sourceType, files, comparison]);
+    }, [sourceType, files, comparison, prefixToRemove]);
+
+    // Ensure fields are always displayed with correct depth calculated from path
+    // and sorted hierarchically (parents before children, maintaining XML order)
+    const displayFields = useMemo(() => {
+        // First, recalculate depth from path structure
+        const fieldsWithCorrectDepth = fields.map(field => {
+            const calculatedDepth = field.path ? field.path.split(' > ').length - 1 : 0;
+            return {
+                ...field,
+                depth: calculatedDepth
+            };
+        });
+
+        // Build a tree structure and flatten it to ensure correct order
+        const fieldMap = new Map();
+        const rootFields = [];
+
+        // First pass: create all nodes
+        fieldsWithCorrectDepth.forEach(field => {
+            const node = {
+                ...field,
+                children: []
+            };
+            fieldMap.set(field.path, node);
+            
+            if (!field.parentPath || field.parentPath === '') {
+                rootFields.push(node);
+            }
+        });
+
+        // Second pass: build parent-child relationships
+        fieldsWithCorrectDepth.forEach(field => {
+            const node = fieldMap.get(field.path);
+            if (field.parentPath && field.parentPath !== '') {
+                const parent = fieldMap.get(field.parentPath);
+                if (parent) {
+                    parent.children.push(node);
+                } else {
+                    // Parent not found, treat as root
+                    rootFields.push(node);
+                }
+            }
+        });
+
+        // Sort root fields by orderIndex
+        rootFields.sort((a, b) => {
+            const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
+            const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
+            return orderA - orderB;
+        });
+
+        // Recursive function to sort children and flatten tree
+        const sortAndFlatten = (nodes) => {
+            const result = [];
+            nodes.forEach(node => {
+                // Sort children by orderIndex
+                node.children.sort((a, b) => {
+                    const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
+                    const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
+                    return orderA - orderB;
+                });
+                
+                // Add current node
+                const { children, ...fieldData } = node;
+                result.push(fieldData);
+                
+                // Recursively add children
+                result.push(...sortAndFlatten(node.children));
+            });
+            return result;
+        };
+
+        return sortAndFlatten(rootFields);
+    }, [fields]);
 
     const handleFieldChange = (path, updates) => {
         setFields(prev => prev.map(f =>
@@ -68,12 +163,16 @@ function GeneratorView({ files, comparison }) {
 
     const updateFieldPath = (field, newParentPath, newDepth) => {
         const newPath = newParentPath ? `${newParentPath} > ${field.name}` : field.name;
+        
+        // Calculate depth from path structure to ensure consistency
+        // Depth = number of " > " separators in the path
+        const calculatedDepth = newPath.split(' > ').length - 1;
 
         return {
             ...field,
             path: newPath,
             parentPath: newParentPath,
-            depth: newDepth
+            depth: calculatedDepth // Use calculated depth instead of passed newDepth
         };
     };
 
@@ -107,12 +206,15 @@ function GeneratorView({ files, comparison }) {
                     const suffix = newFields[i].path.substring(oldPathPrefix.length);
                     const childNewPath = newFields[index].path + suffix;
                     const childNewParentPath = childNewPath.substring(0, childNewPath.lastIndexOf(' > '));
+                    
+                    // Calculate depth from path structure
+                    const childNewDepth = childNewPath.split(' > ').length - 1;
 
                     newFields[i] = {
                         ...newFields[i],
                         path: childNewPath,
                         parentPath: childNewParentPath,
-                        depth: newFields[i].depth + 1 // Increase depth by 1
+                        depth: childNewDepth // Calculate from path structure
                     };
                 }
             }
@@ -224,12 +326,15 @@ function GeneratorView({ files, comparison }) {
                     const suffix = newFields[i].path.substring(oldPathPrefix.length);
                     const childNewPath = newFields[index].path + suffix;
                     const childNewParentPath = childNewPath.substring(0, childNewPath.lastIndexOf(' > '));
+                    
+                    // Calculate depth from path structure
+                    const childNewDepth = childNewPath.split(' > ').length - 1;
 
                     newFields[i] = {
                         ...newFields[i],
                         path: childNewPath,
                         parentPath: childNewParentPath,
-                        depth: newFields[i].depth - 1 // Decrease depth by 1
+                        depth: childNewDepth // Calculate from path structure
                     };
                 }
             }
@@ -274,8 +379,8 @@ function GeneratorView({ files, comparison }) {
             }
 
             const node = {
-                name: field.name,
-                text: field.customValue,
+                name: removePrefixFromFieldName(field.name, prefixToRemove),
+                text: field.hasChildren ? undefined : field.customValue,
                 children: [],
                 attributes: field.attributes || []
             };
@@ -469,15 +574,18 @@ function GeneratorView({ files, comparison }) {
                         <h3>Field Configuration <span style={{ fontSize: '0.8em', fontWeight: 'normal', color: '#666' }}>(Drag to reorder, Cmd+Arrows to move/indent)</span></h3>
                         <div className="fields-list-container">
                             <ul className="field-list">
-                                {fields.map((field, index) => (
+                                {displayFields.map((field, index) => {
+                                    // Find the original index in the fields array for drag/drop operations
+                                    const originalIndex = fields.findIndex(f => f.uiId === field.uiId);
+                                    return (
                                     <li
                                         key={field.uiId}
                                         style={{ paddingLeft: `${field.depth * 20}px` }}
-                                        className={`field-item ${selectedFieldId === field.uiId ? 'selected' : ''} ${draggedItemIndex === index ? 'dragging' : ''}`}
+                                        className={`field-item ${selectedFieldId === field.uiId ? 'selected' : ''} ${draggedItemIndex === originalIndex ? 'dragging' : ''}`}
                                         draggable
-                                        onDragStart={(e) => onDragStart(e, index)}
-                                        onDragOver={(e) => onDragOver(e, index)}
-                                        onDrop={(e) => onDrop(e, index)}
+                                        onDragStart={(e) => onDragStart(e, originalIndex)}
+                                        onDragOver={(e) => onDragOver(e, originalIndex)}
+                                        onDrop={(e) => onDrop(e, originalIndex)}
                                         onClick={() => setSelectedFieldId(field.uiId)}
                                     >
                                         <div className="field-row">
@@ -490,13 +598,13 @@ function GeneratorView({ files, comparison }) {
                                                     checked={field.enabled}
                                                     onChange={(e) => handleFieldChange(field.path, { enabled: e.target.checked })}
                                                 />
-                                                <span className="field-name">{field.name}</span>
+                                                <span className="field-name">{removePrefixFromFieldName(field.name, prefixToRemove)}</span>
                                             </label>
-                                            {field.hasText && (
+                                            {!field.hasChildren && (
                                                 <input
                                                     type="text"
                                                     className="field-value-input"
-                                                    value={field.customValue}
+                                                    value={field.customValue || ''}
                                                     onChange={(e) => handleFieldChange(field.path, { customValue: e.target.value })}
                                                     placeholder="Value"
                                                     disabled={!field.enabled}
@@ -505,7 +613,8 @@ function GeneratorView({ files, comparison }) {
                                             )}
                                         </div>
                                     </li>
-                                ))}
+                                    );
+                                })}
                             </ul>
                         </div>
                     </div>

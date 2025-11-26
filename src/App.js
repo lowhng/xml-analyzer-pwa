@@ -47,6 +47,7 @@ function App() {
   const [files, setFiles] = useState([]);
   const [activeTab, setActiveTab] = useState('single');
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
+  const [prefixToRemove, setPrefixToRemove] = useState('');
 
   // Persist comparison filters across tab switches
   const createEmptyFilter = () => ({
@@ -132,7 +133,7 @@ function App() {
   };
 
   const currentFile = files[selectedFileIndex];
-  const comparison = files.length > 1 ? compareFields(files) : null;
+  const comparison = files.length > 1 ? compareFields(files, prefixToRemove) : null;
 
   return (
     <div className="app">
@@ -218,7 +219,7 @@ function App() {
               {activeTab === 'single' && currentFile && (
                 <div className="content-section">
                   <Statistics file={currentFile} />
-                  <FieldsViewer file={currentFile} />
+                  <FieldsViewer file={currentFile} prefixToRemove={prefixToRemove} />
                 </div>
               )}
 
@@ -228,6 +229,8 @@ function App() {
                   files={files}
                   filters={comparisonFilters}
                   setFilters={setComparisonFilters}
+                  prefixToRemove={prefixToRemove}
+                  setPrefixToRemove={setPrefixToRemove}
                 />
               )}
 
@@ -235,6 +238,7 @@ function App() {
                 <GeneratorView
                   files={files}
                   comparison={comparison}
+                  prefixToRemove={prefixToRemove}
                 />
               )}
             </>

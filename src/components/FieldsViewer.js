@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { fieldsToCSV } from '../utils/xmlParser';
+import { fieldsToCSV, removePrefixFromFieldName, removePrefixFromPath } from '../utils/xmlParser';
 
 // Tooltip component
 const Tooltip = ({ text, children }) => {
@@ -102,7 +102,7 @@ const HeaderWithTooltip = ({ title, tooltip, width, onResize, columnIndex }) => 
   );
 };
 
-function FieldsViewer({ file }) {
+function FieldsViewer({ file, prefixToRemove = '' }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
   const [columnWidths, setColumnWidths] = useState({
@@ -138,7 +138,8 @@ function FieldsViewer({ file }) {
     
     function collectVisible(fields, depth = 0) {
       fields.forEach(field => {
-        const matchesSearch = field.name.toLowerCase().includes(searchTerm.toLowerCase());
+        const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+        const matchesSearch = normalizedName.toLowerCase().includes(searchTerm.toLowerCase());
         
         if (matchesSearch) {
           visible.push(field);
@@ -160,10 +161,10 @@ function FieldsViewer({ file }) {
     collectVisible(rootFields);
     
     return visible;
-  }, [file.fields, searchTerm, expandedPaths]);
+  }, [file.fields, searchTerm, expandedPaths, prefixToRemove]);
 
   const handleExportCSV = () => {
-    const csv = fieldsToCSV(file.fields, file.filename);
+    const csv = fieldsToCSV(file.fields, file.filename, prefixToRemove);
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
@@ -194,14 +195,16 @@ function FieldsViewer({ file }) {
           return orderA - orderB;
         });
 
-      const matchesSearch = field.name.toLowerCase().includes(searchTerm.toLowerCase());
+      const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+      const matchesSearch = normalizedName.toLowerCase().includes(searchTerm.toLowerCase());
       
       // Check if this field or any of its descendants match
       const hasMatchingDescendants = children.some(child => {
-        return child.name.toLowerCase().includes(searchTerm.toLowerCase());
+        const childNormalizedName = removePrefixFromFieldName(child.name, prefixToRemove);
+        return childNormalizedName.toLowerCase().includes(searchTerm.toLowerCase());
       }) || (hasChildren && file.fields.some(f => 
         f.path.startsWith(field.path + ' > ') && 
-        f.name.toLowerCase().includes(searchTerm.toLowerCase())
+        removePrefixFromFieldName(f.name, prefixToRemove).toLowerCase().includes(searchTerm.toLowerCase())
       ));
 
       if (!matchesSearch && !hasMatchingDescendants) {
@@ -242,7 +245,7 @@ function FieldsViewer({ file }) {
                   )}
                   {!hasChildren && <span style={{ width: '1.75rem', display: 'inline-block' }} />}
                   <code style={{ backgroundColor: 'var(--bg-color)', padding: '0.25rem 0.5rem', borderRadius: '0.25rem' }}>
-                    {field.name}
+                    {normalizedName}
                   </code>
                 </div>
               </td>
