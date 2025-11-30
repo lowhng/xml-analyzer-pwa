@@ -105,6 +105,8 @@ const HeaderWithTooltip = ({ title, tooltip, width, onResize, columnIndex }) => 
 function FieldsViewer({ file, prefixToRemove = '' }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
+  const [showXMLPreview, setShowXMLPreview] = useState(false);
+  const [formattedXML, setFormattedXML] = useState('');
   const [columnWidths, setColumnWidths] = useState({
     0: 250, // Field Name
     1: 80,  // Depth
@@ -174,6 +176,114 @@ function FieldsViewer({ file, prefixToRemove = '' }) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Format XML with proper indentation
+  const formatXML = (xmlString) => {
+    try {
+      // Parse the XML to ensure it's valid
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
+      
+      // Check for parsing errors
+      if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+        return xmlString; // Return original if parsing fails
+      }
+
+      // Format the XML with indentation
+      const formatNode = (node, indent = 0) => {
+        const indentStr = '  '.repeat(indent);
+        let result = '';
+
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          // Build opening tag with attributes
+          let tag = `${indentStr}<${node.nodeName}`;
+          
+          // Add attributes
+          if (node.attributes && node.attributes.length > 0) {
+            Array.from(node.attributes).forEach(attr => {
+              tag += ` ${attr.name}="${attr.value.replace(/"/g, '&quot;')}"`;
+            });
+          }
+          
+          // Check if node has element children
+          const hasElementChildren = node.children.length > 0;
+          
+          // Get text content (only direct text nodes, not from nested elements)
+          const directTextNodes = Array.from(node.childNodes)
+            .filter(n => n.nodeType === Node.TEXT_NODE)
+            .map(n => n.textContent.trim())
+            .filter(t => t.length > 0);
+
+          if (hasElementChildren) {
+            // Has element children - format with newlines
+            tag += '>\n';
+            
+            // Process all child nodes (both elements and text)
+            let childrenResult = '';
+            Array.from(node.childNodes).forEach(child => {
+              if (child.nodeType === Node.ELEMENT_NODE) {
+                childrenResult += formatNode(child, indent + 1);
+              } else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
+                childrenResult += `${indentStr}  ${child.textContent.trim()}\n`;
+              }
+            });
+            
+            result = tag + childrenResult + `${indentStr}</${node.nodeName}>\n`;
+          } else if (directTextNodes.length > 0) {
+            // Only text content, no element children
+            result = tag + `>${directTextNodes.join(' ')}</${node.nodeName}>\n`;
+          } else {
+            // Empty element
+            result = tag + '/>\n';
+          }
+          
+          return result;
+        }
+        
+        return '';
+      };
+
+      // Format the document element
+      let formatted = '';
+      // Preserve XML declaration if present
+      if (xmlString.trim().startsWith('<?xml')) {
+        const declarationMatch = xmlString.match(/<\?xml[^>]*\?>/);
+        if (declarationMatch) {
+          formatted = declarationMatch[0] + '\n';
+        }
+      } else {
+        formatted = '<?xml version="1.0" encoding="UTF-8"?>\n';
+      }
+      formatted += formatNode(xmlDoc.documentElement, 0);
+      
+      return formatted;
+    } catch (error) {
+      // If formatting fails, return original XML
+      return xmlString;
+    }
+  };
+
+  const handleShowXMLPreview = () => {
+    if (file.xmlString) {
+      const formatted = formatXML(file.xmlString);
+      setFormattedXML(formatted);
+      setShowXMLPreview(true);
+    }
+  };
+
+  const handleDownloadXML = () => {
+    if (formattedXML) {
+      const blob = new Blob([formattedXML], { type: 'text/xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.filename.endsWith('.xml') ? file.filename : `${file.filename}.xml`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
   };
 
   // Render fields recursively
@@ -336,6 +446,9 @@ function FieldsViewer({ file, prefixToRemove = '' }) {
           <button className="export-btn" onClick={handleExportCSV}>
             📥 Export to CSV
           </button>
+          <button className="export-btn" onClick={handleShowXMLPreview}>
+            👁️ Preview XML
+          </button>
         </div>
       </div>
 
@@ -419,6 +532,109 @@ function FieldsViewer({ file, prefixToRemove = '' }) {
       {allVisibleFields.length === 0 && (
         <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
           No fields match your search criteria
+        </div>
+      )}
+
+      {showXMLPreview && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            zIndex: 10000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '2rem',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowXMLPreview(false);
+            }
+          }}
+        >
+          <div 
+            style={{
+              backgroundColor: 'var(--surface-color)',
+              borderRadius: '0.75rem',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+              width: '100%',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div 
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '1rem 1.5rem',
+                borderBottom: '1px solid var(--border-color)',
+                backgroundColor: 'var(--bg-color)',
+              }}
+            >
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 600 }}>
+                XML Preview - {file.filename}
+              </h3>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button
+                  className="primary-btn"
+                  onClick={handleDownloadXML}
+                  style={{
+                    backgroundColor: 'var(--primary-color)',
+                    color: 'white',
+                    border: 'none',
+                    padding: '0.5rem 1rem',
+                    borderRadius: '0.5rem',
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    fontSize: '0.875rem',
+                  }}
+                >
+                  Download
+                </button>
+                <button
+                  onClick={() => setShowXMLPreview(false)}
+                  style={{
+                    backgroundColor: 'transparent',
+                    border: '1px solid var(--border-color)',
+                    padding: '0.5rem 1rem',
+                    borderRadius: '0.5rem',
+                    cursor: 'pointer',
+                    fontSize: '0.875rem',
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <pre 
+              style={{
+                flex: 1,
+                padding: '1rem',
+                margin: 0,
+                border: 'none',
+                fontFamily: 'monospace',
+                fontSize: '0.875rem',
+                lineHeight: '1.5',
+                color: 'var(--text-primary)',
+                backgroundColor: '#f8fafc',
+                whiteSpace: 'pre-wrap',
+                wordWrap: 'break-word',
+                overflow: 'auto',
+                maxHeight: 'calc(90vh - 80px)',
+              }}
+            >
+              <code>{formattedXML || 'Loading...'}</code>
+            </pre>
+          </div>
         </div>
       )}
     </div>

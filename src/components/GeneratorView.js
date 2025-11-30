@@ -1,22 +1,59 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath } from '../utils/xmlParser';
+import { mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath, getFieldValuesFromFiles } from '../utils/xmlParser';
 
 function GeneratorView({ files, comparison, prefixToRemove = '' }) {
-    const [sourceType, setSourceType] = useState('merged'); // 'merged', 'common', or fileId
+    const [sourceType, setSourceType] = useState('merged'); // 'merged', 'common', or 'field-based'
     const [fields, setFields] = useState([]);
     const [generatedXML, setGeneratedXML] = useState('');
+    
+    // Field-based selection state
+    const [sourceFieldName, setSourceFieldName] = useState('');
+    const [sourceFieldValue, setSourceFieldValue] = useState('');
+    const [sourceFieldCaseSensitive, setSourceFieldCaseSensitive] = useState(false);
 
-    // Prepare source options
-    const sourceOptions = useMemo(() => {
-        const options = [
-            { id: 'merged', label: 'Merged Fields (All Files)' },
-            { id: 'common', label: 'Common Fields (Intersection)' },
-        ];
+    // Compute available fields from all files (same logic as ComparisonView)
+    const availableFields = useMemo(() => {
+        const fieldNames = new Set();
         files.forEach(file => {
-            options.push({ id: file.id, label: `File: ${file.filename}` });
+            file.fields.forEach(field => {
+                const textValue = field.textContent ? field.textContent.trim() : '';
+                if (textValue.length > 0) {
+                    const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+                    fieldNames.add(normalizedName);
+                }
+            });
         });
-        return options;
-    }, [files]);
+        return Array.from(fieldNames).sort((a, b) => a.localeCompare(b));
+    }, [files, prefixToRemove]);
+
+    // Filter files based on field-based selection
+    const filteredSourceFiles = useMemo(() => {
+        if (sourceType !== 'field-based' || !sourceFieldName || !sourceFieldValue.trim()) {
+            return [];
+        }
+        
+        const trimmedValue = sourceFieldValue.trim();
+        const normalizedFilterValue = sourceFieldCaseSensitive
+            ? trimmedValue
+            : trimmedValue.toLowerCase();
+
+        return files.filter(file =>
+            file.fields.some(field => {
+                const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+                if (normalizedFieldName !== sourceFieldName) {
+                    return false;
+                }
+
+                const textValue = field.textContent ? field.textContent.trim() : '';
+                if (textValue.length === 0) {
+                    return false;
+                }
+
+                const candidateValue = sourceFieldCaseSensitive ? textValue : textValue.toLowerCase();
+                return candidateValue === normalizedFilterValue;
+            })
+        );
+    }, [files, sourceType, sourceFieldName, sourceFieldValue, sourceFieldCaseSensitive, prefixToRemove]);
 
     // Initialize fields based on selection
     useEffect(() => {
@@ -36,22 +73,10 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                     ...(typeof f === 'string' ? { name: f, path: f, depth: 0 } : {})
                 }));
             }
-        } else {
-            // Specific file - sourceType is a string from select, but file.id might be a number
-            const fileId = isNaN(sourceType) ? sourceType : parseFloat(sourceType);
-            const file = files.find(f => {
-                // Handle both string and number IDs
-                return String(f.id) === String(sourceType) || f.id === fileId;
-            });
-            if (file && file.fields && Array.isArray(file.fields)) {
-                initialFields = file.fields.map(f => ({
-                    ...f,
-                    name: removePrefixFromFieldName(f.name, prefixToRemove),
-                    path: removePrefixFromPath(f.path, prefixToRemove),
-                    parentPath: removePrefixFromPath(f.parentPath || '', prefixToRemove),
-                    enabled: true,
-                    customValue: f.textContent || ''
-                }));
+        } else if (sourceType === 'field-based') {
+            // Filter files based on field selection and merge matching files
+            if (filteredSourceFiles.length > 0) {
+                initialFields = mergeFieldsFromFiles(filteredSourceFiles, prefixToRemove) || [];
             }
         }
 
@@ -79,7 +104,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         });
 
         setFields(fieldsWithState);
-    }, [sourceType, files, comparison, prefixToRemove]);
+    }, [sourceType, files, comparison, prefixToRemove, filteredSourceFiles]);
 
     // Ensure fields are always displayed with correct depth calculated from path
     // and sorted hierarchically (parents before children, maintaining XML order)
@@ -94,6 +119,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         });
 
         // Build a tree structure and flatten it to ensure correct order
+        // Use uiId as key to handle duplicate paths correctly
         const fieldMap = new Map();
         const rootFields = [];
 
@@ -103,7 +129,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                 ...field,
                 children: []
             };
-            fieldMap.set(field.path, node);
+            fieldMap.set(field.uiId, node);
             
             if (!field.parentPath || field.parentPath === '') {
                 rootFields.push(node);
@@ -111,12 +137,32 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         });
 
         // Second pass: build parent-child relationships
+        // For each field, find its parent by matching parentPath
+        // Since paths can be duplicated, we need to find the most recent parent with matching path
         fieldsWithCorrectDepth.forEach(field => {
-            const node = fieldMap.get(field.path);
+            const node = fieldMap.get(field.uiId);
             if (field.parentPath && field.parentPath !== '') {
-                const parent = fieldMap.get(field.parentPath);
-                if (parent) {
-                    parent.children.push(node);
+                // Find the most recent parent with matching path that appears before this field
+                // The parent should have depth = field.depth - 1
+                let parentNode = null;
+                const currentIndex = fieldsWithCorrectDepth.findIndex(f => f.uiId === field.uiId);
+                const expectedParentDepth = field.depth - 1;
+                
+                for (let i = currentIndex - 1; i >= 0; i--) {
+                    const candidate = fieldsWithCorrectDepth[i];
+                    // Check if this candidate is the parent: same path and correct depth
+                    if (candidate.path === field.parentPath && candidate.depth === expectedParentDepth) {
+                        parentNode = fieldMap.get(candidate.uiId);
+                        break;
+                    }
+                    // Stop if we hit a field with same or lesser depth (we've gone past potential parents)
+                    if (candidate.depth < expectedParentDepth) {
+                        break;
+                    }
+                }
+                
+                if (parentNode) {
+                    parentNode.children.push(node);
                 } else {
                     // Parent not found, treat as root
                     rootFields.push(node);
@@ -124,22 +170,28 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             }
         });
 
-        // Sort root fields by orderIndex
+        // Sort root fields by their position in the original fields array (maintain insertion order)
+        // Use a map to track original positions
+        const positionMap = new Map();
+        fieldsWithCorrectDepth.forEach((field, index) => {
+            positionMap.set(field.uiId, index);
+        });
+        
         rootFields.sort((a, b) => {
-            const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
-            const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
-            return orderA - orderB;
+            const posA = positionMap.get(a.uiId) ?? 999999;
+            const posB = positionMap.get(b.uiId) ?? 999999;
+            return posA - posB;
         });
 
         // Recursive function to sort children and flatten tree
         const sortAndFlatten = (nodes) => {
             const result = [];
             nodes.forEach(node => {
-                // Sort children by orderIndex
+                // Sort children by their position in the original array
                 node.children.sort((a, b) => {
-                    const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
-                    const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
-                    return orderA - orderB;
+                    const posA = positionMap.get(a.uiId) ?? 999999;
+                    const posB = positionMap.get(b.uiId) ?? 999999;
+                    return posA - posB;
                 });
                 
                 // Add current node
@@ -155,9 +207,45 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         return sortAndFlatten(rootFields);
     }, [fields]);
 
-    const handleFieldChange = (path, updates) => {
+    // Determine source files based on sourceType
+    const sourceFiles = useMemo(() => {
+        if (sourceType === 'merged') {
+            return files;
+        } else if (sourceType === 'common') {
+            return files; // Common fields exist in all files
+        } else if (sourceType === 'field-based') {
+            return filteredSourceFiles;
+        }
+        return [];
+    }, [sourceType, files, filteredSourceFiles]);
+
+    // Compute available values for each field
+    const fieldValuesMap = useMemo(() => {
+        const valuesMap = new Map();
+        
+        if (sourceFiles.length === 0) {
+            return valuesMap;
+        }
+        
+        displayFields.forEach(field => {
+            // Only compute values for leaf nodes (fields without children)
+            if (!field.hasChildren) {
+                const values = getFieldValuesFromFiles(
+                    sourceFiles,
+                    field.name,
+                    field.parentPath || '',
+                    prefixToRemove
+                );
+                valuesMap.set(field.uiId, values);
+            }
+        });
+        
+        return valuesMap;
+    }, [displayFields, sourceFiles, prefixToRemove]);
+
+    const handleFieldChange = (uiId, updates) => {
         setFields(prev => prev.map(f =>
-            f.path === path ? { ...f, ...updates } : f
+            f.uiId === uiId ? { ...f, ...updates } : f
         ));
     };
 
@@ -234,6 +322,71 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             endIndex = i;
         }
         return { start: startIndex, end: endIndex };
+    };
+
+    const handleDuplicateBlock = (uiId) => {
+        // Find the field in displayFields to get the correct block
+        const displayIndex = displayFields.findIndex(f => f.uiId === uiId);
+        if (displayIndex === -1) return;
+        
+        const block = getFieldBlock(displayIndex, displayFields);
+        const blockDisplayFields = displayFields.slice(block.start, block.end + 1);
+        
+        // Get all uiIds in the block
+        const blockUiIds = new Set(blockDisplayFields.map(f => f.uiId));
+        
+        // Create a map of uiId to actual field data for quick lookup
+        const fieldMap = new Map();
+        fields.forEach(f => fieldMap.set(f.uiId, f));
+        
+        // Get fields in displayFields order (preserving hierarchy)
+        const blockFields = blockDisplayFields
+            .map(displayField => fieldMap.get(displayField.uiId))
+            .filter(f => f !== undefined);
+        
+        if (blockFields.length === 0) return;
+        
+        // Find the maximum index of any field in this block within the fields array
+        // This ensures we insert after the entire block
+        let maxBlockIndex = -1;
+        fields.forEach((field, index) => {
+            if (blockUiIds.has(field.uiId) && index > maxBlockIndex) {
+                maxBlockIndex = index;
+            }
+        });
+        
+        if (maxBlockIndex === -1) return;
+        
+        // Create duplicates with new unique IDs, preserving the order
+        const duplicatedFields = blockFields.map(field => ({
+            ...field,
+            uiId: Math.random().toString(36).substr(2, 9) + '-' + Date.now()
+        }));
+
+        // Insert the duplicated block right after the original block
+        setFields(prev => {
+            const newFields = [...prev];
+            return [
+                ...newFields.slice(0, maxBlockIndex + 1),
+                ...duplicatedFields,
+                ...newFields.slice(maxBlockIndex + 1)
+            ];
+        });
+    };
+
+    const handleDeleteBlock = (uiId) => {
+        // Find the field in displayFields to get the correct block
+        const displayIndex = displayFields.findIndex(f => f.uiId === uiId);
+        if (displayIndex === -1) return;
+        
+        const block = getFieldBlock(displayIndex, displayFields);
+        const blockDisplayFields = displayFields.slice(block.start, block.end + 1);
+        
+        // Get all uiIds to remove
+        const uiIdsToRemove = new Set(blockDisplayFields.map(f => f.uiId));
+        
+        // Remove the block from fields array
+        setFields(prev => prev.filter(f => !uiIdsToRemove.has(f.uiId)));
     };
 
     const handleMoveUp = (index) => {
@@ -357,25 +510,34 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         const pathMap = new Map();
         pathMap.set('', root);
 
-        // Sort fields by depth to ensure parents are processed before children
-        const sortedFields = [...enabledFields].sort((a, b) => a.depth - b.depth);
-
-        sortedFields.forEach(field => {
+        // Use displayFields order (which maintains hierarchy) but get actual field data from enabledFields
+        // This ensures we process fields in the correct hierarchical order with correct values
+        const enabledDisplayFields = displayFields
+            .filter(f => enabledFields.some(ef => ef.uiId === f.uiId))
+            .map(displayField => {
+                // Get the actual field data with updated customValue
+                const actualField = enabledFields.find(ef => ef.uiId === displayField.uiId);
+                return actualField || displayField;
+            });
+        
+        // Track the last node created for each path to handle duplicates
+        // When we have duplicate paths, children should attach to the most recent parent with that path
+        const lastNodeForPath = new Map();
+        lastNodeForPath.set('', root);
+        
+        enabledDisplayFields.forEach((field, fieldIndex) => {
             const parentPath = field.parentPath || '';
-            let parentNode = pathMap.get(parentPath);
+            let parentNode = lastNodeForPath.get(parentPath);
 
-            // If parent doesn't exist (maybe disabled?), try to find the nearest enabled ancestor
+            // If parent doesn't exist, try to find the nearest enabled ancestor
             if (!parentNode) {
-                // Fallback: attach to root if parent is missing/disabled
-                // This might break structure but ensures field is included
-                // Better approach: find nearest enabled ancestor
                 let currentPath = parentPath;
-                while (currentPath && !pathMap.has(currentPath)) {
+                while (currentPath && !lastNodeForPath.has(currentPath)) {
                     const lastSep = currentPath.lastIndexOf(' > ');
                     if (lastSep === -1) currentPath = '';
                     else currentPath = currentPath.substring(0, lastSep);
                 }
-                parentNode = pathMap.get(currentPath) || root;
+                parentNode = lastNodeForPath.get(currentPath) || root;
             }
 
             const node = {
@@ -386,7 +548,10 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             };
 
             parentNode.children.push(node);
-            pathMap.set(field.path, node);
+            // Update the last node for this path (handles duplicates - last one wins for children lookup)
+            lastNodeForPath.set(field.path, node);
+            // Also store by uiId for direct lookup if needed
+            pathMap.set(field.uiId, node);
         });
 
         // Recursive function to build XML string
@@ -535,37 +700,96 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
     return (
         <div className="generator-view" onKeyDown={handleKeyDown} tabIndex={0}>
             <div className="generator-header">
-                <h2>XML Generator</h2>
-                <div className="generator-controls">
-                    <div className="source-selector">
-                        <label>Source:</label>
-                        <select
-                            value={sourceType}
-                            onChange={(e) => setSourceType(e.target.value)}
-                        >
-                            {sourceOptions.map(opt => (
-                                <option key={opt.id} value={opt.id}>{opt.label}</option>
-                            ))}
-                        </select>
-                    </div>
-                    <div className="view-tabs">
-                        <button
-                            className={`view-tab ${activeTab === 'config' ? 'active' : ''}`}
-                            onClick={() => setActiveTab('config')}
-                        >
-                            Configuration
-                        </button>
-                        <button
-                            className={`view-tab ${activeTab === 'preview' ? 'active' : ''}`}
-                            onClick={() => {
-                                setActiveTab('preview');
-                                generateXML(); // Auto-generate when switching to preview
-                            }}
-                        >
-                            Preview
-                        </button>
+                <div className="generator-header-row">
+                    <h2>XML Generator</h2>
+                    <div className="generator-controls">
+                        <div className="source-selector">
+                            <label>Source:</label>
+                            <select
+                                value={sourceType}
+                                onChange={(e) => {
+                                    setSourceType(e.target.value);
+                                    // Clear field-based selection when switching away
+                                    if (e.target.value !== 'field-based') {
+                                        setSourceFieldName('');
+                                        setSourceFieldValue('');
+                                        setSourceFieldCaseSensitive(false);
+                                    }
+                                }}
+                                style={{ minWidth: '150px' }}
+                            >
+                                <option value="merged">Merged (All Files)</option>
+                                <option value="common">Common Fields</option>
+                                <option value="field-based">Field-based</option>
+                            </select>
+                        </div>
+                        <div className="view-tabs">
+                            <button
+                                className={`view-tab ${activeTab === 'config' ? 'active' : ''}`}
+                                onClick={() => setActiveTab('config')}
+                            >
+                                Configuration
+                            </button>
+                            <button
+                                className={`view-tab ${activeTab === 'preview' ? 'active' : ''}`}
+                                onClick={() => {
+                                    setActiveTab('preview');
+                                    generateXML(); // Auto-generate when switching to preview
+                                }}
+                            >
+                                Preview
+                            </button>
+                        </div>
                     </div>
                 </div>
+                {sourceType === 'field-based' && (
+                    <div className="generator-filter-row">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <select
+                                value={sourceFieldName}
+                                onChange={(e) => setSourceFieldName(e.target.value)}
+                                style={{ padding: '0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.5rem', fontSize: '0.875rem', minWidth: '150px' }}
+                            >
+                                <option value="">Select field...</option>
+                                {availableFields.map(fieldName => (
+                                    <option key={fieldName} value={fieldName}>
+                                        {fieldName}
+                                    </option>
+                                ))}
+                            </select>
+                            
+                            <input
+                                type="text"
+                                placeholder="Enter value"
+                                value={sourceFieldValue}
+                                onChange={(e) => setSourceFieldValue(e.target.value)}
+                                disabled={!sourceFieldName}
+                                style={{ padding: '0.5rem', border: '1px solid var(--border-color)', borderRadius: '0.5rem', fontSize: '0.875rem', width: '150px' }}
+                            />
+                            
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.875rem', cursor: 'pointer' }}>
+                                <input
+                                    type="checkbox"
+                                    checked={sourceFieldCaseSensitive}
+                                    onChange={(e) => setSourceFieldCaseSensitive(e.target.checked)}
+                                    disabled={!sourceFieldName}
+                                />
+                                Case sensitive
+                            </label>
+                            
+                            {filteredSourceFiles.length > 0 && (
+                                <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                                    ({filteredSourceFiles.length} file{filteredSourceFiles.length === 1 ? '' : 's'} matched)
+                                </span>
+                            )}
+                            {sourceFieldName && sourceFieldValue.trim() && filteredSourceFiles.length === 0 && (
+                                <span style={{ fontSize: '0.875rem', color: '#dc2626' }}>
+                                    (No files matched)
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             <div className="generator-content">
@@ -573,6 +797,21 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                     <div className="fields-editor full-width">
                         <h3>Field Configuration <span style={{ fontSize: '0.8em', fontWeight: 'normal', color: '#666' }}>(Drag to reorder, Cmd+Arrows to move/indent)</span></h3>
                         <div className="fields-list-container">
+                            {sourceType === 'field-based' && (!sourceFieldName || !sourceFieldValue.trim()) && (
+                                <div style={{ padding: '1rem', backgroundColor: '#fef3c7', border: '1px solid #fbbf24', borderRadius: '0.5rem', marginBottom: '1rem', color: '#92400e' }}>
+                                    Please select a field and enter a value above to filter source files.
+                                </div>
+                            )}
+                            {sourceType === 'field-based' && sourceFieldName && sourceFieldValue.trim() && filteredSourceFiles.length === 0 && (
+                                <div style={{ padding: '1rem', backgroundColor: '#fee2e2', border: '1px solid #f87171', borderRadius: '0.5rem', marginBottom: '1rem', color: '#991b1b' }}>
+                                    No files match the selected field value. Please adjust your selection.
+                                </div>
+                            )}
+                            {sourceType === 'field-based' && filteredSourceFiles.length > 0 && (
+                                <div style={{ padding: '0.5rem 1rem', backgroundColor: '#dcfce7', border: '1px solid #86efac', borderRadius: '0.5rem', marginBottom: '1rem', fontSize: '0.875rem', color: '#166534' }}>
+                                    Using {filteredSourceFiles.length} matching file{filteredSourceFiles.length === 1 ? '' : 's'} as source.
+                                </div>
+                            )}
                             <ul className="field-list">
                                 {displayFields.map((field, index) => {
                                     // Find the original index in the fields array for drag/drop operations
@@ -592,25 +831,122 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                                             <div className="drag-handle" style={{ cursor: 'grab', marginRight: '10px', color: '#ccc' }}>
                                                 ☰
                                             </div>
+                                            <button
+                                                className="duplicate-btn"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleDuplicateBlock(field.uiId);
+                                                }}
+                                                title="Duplicate this field and its children"
+                                                style={{
+                                                    background: 'none',
+                                                    border: '1px solid var(--border-color)',
+                                                    borderRadius: '0.25rem',
+                                                    width: '1.25rem',
+                                                    height: '1.25rem',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    cursor: 'pointer',
+                                                    color: 'var(--text-secondary)',
+                                                    fontSize: '0.75rem',
+                                                    padding: 0,
+                                                    marginRight: '0.25rem',
+                                                    transition: 'all 0.2s',
+                                                    flexShrink: 0
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.target.style.backgroundColor = 'var(--bg-color)';
+                                                    e.target.style.color = 'var(--primary-color)';
+                                                    e.target.style.borderColor = 'var(--primary-color)';
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.target.style.backgroundColor = 'transparent';
+                                                    e.target.style.color = 'var(--text-secondary)';
+                                                    e.target.style.borderColor = 'var(--border-color)';
+                                                }}
+                                            >
+                                                +
+                                            </button>
+                                            <button
+                                                className="delete-btn"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    if (window.confirm('Delete this field and all its children?')) {
+                                                        handleDeleteBlock(field.uiId);
+                                                    }
+                                                }}
+                                                title="Delete this field and its children"
+                                                style={{
+                                                    background: 'none',
+                                                    border: '1px solid var(--border-color)',
+                                                    borderRadius: '0.25rem',
+                                                    width: '1.25rem',
+                                                    height: '1.25rem',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    cursor: 'pointer',
+                                                    color: 'var(--text-secondary)',
+                                                    fontSize: '0.75rem',
+                                                    padding: 0,
+                                                    marginRight: '0.5rem',
+                                                    transition: 'all 0.2s',
+                                                    flexShrink: 0
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.target.style.backgroundColor = '#fee2e2';
+                                                    e.target.style.color = '#dc2626';
+                                                    e.target.style.borderColor = '#dc2626';
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.target.style.backgroundColor = 'transparent';
+                                                    e.target.style.color = 'var(--text-secondary)';
+                                                    e.target.style.borderColor = 'var(--border-color)';
+                                                }}
+                                            >
+                                                ×
+                                            </button>
                                             <label className="field-label">
                                                 <input
                                                     type="checkbox"
                                                     checked={field.enabled}
-                                                    onChange={(e) => handleFieldChange(field.path, { enabled: e.target.checked })}
+                                                    onChange={(e) => handleFieldChange(field.uiId, { enabled: e.target.checked })}
                                                 />
                                                 <span className="field-name">{removePrefixFromFieldName(field.name, prefixToRemove)}</span>
                                             </label>
-                                            {!field.hasChildren && (
-                                                <input
-                                                    type="text"
-                                                    className="field-value-input"
-                                                    value={field.customValue || ''}
-                                                    onChange={(e) => handleFieldChange(field.path, { customValue: e.target.value })}
-                                                    placeholder="Value"
-                                                    disabled={!field.enabled}
-                                                    onClick={(e) => e.stopPropagation()} // Prevent selecting row when clicking input
-                                                />
-                                            )}
+                                            {!field.hasChildren && (() => {
+                                                const availableValues = fieldValuesMap.get(field.uiId) || [];
+                                                const valuesCount = availableValues.length;
+                                                const datalistId = `datalist-${field.uiId}`;
+                                                
+                                                return (
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <input
+                                                            type="text"
+                                                            className="field-value-input"
+                                                            value={field.customValue || ''}
+                                                            onChange={(e) => handleFieldChange(field.uiId, { customValue: e.target.value })}
+                                                            placeholder="Value"
+                                                            disabled={!field.enabled}
+                                                            onClick={(e) => e.stopPropagation()} // Prevent selecting row when clicking input
+                                                            list={valuesCount > 0 ? datalistId : undefined}
+                                                        />
+                                                        {valuesCount > 0 && (
+                                                            <span className="field-value-count" title={`${valuesCount} value${valuesCount === 1 ? '' : 's'} available`}>
+                                                                {valuesCount} value{valuesCount === 1 ? '' : 's'}
+                                                            </span>
+                                                        )}
+                                                        {valuesCount > 0 && (
+                                                            <datalist id={datalistId}>
+                                                                {availableValues.map((value, idx) => (
+                                                                    <option key={idx} value={value} />
+                                                                ))}
+                                                            </datalist>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
                                     </li>
                                     );

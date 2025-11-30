@@ -1028,3 +1028,44 @@ export function mergeFieldsFromFiles(files, prefixToRemove = '') {
   
   return merged;
 }
+
+/**
+ * Get all unique values for a field from source files
+ * Matches fields by normalized field name and normalized parent path
+ * @param {Array} files - Array of file objects with fields
+ * @param {string} fieldName - The field name to match
+ * @param {string} parentPath - The parent path to match
+ * @param {string} prefixToRemove - Optional prefix to remove from field names and paths
+ * @returns {Array} Array of unique values (trimmed, non-empty, sorted alphabetically)
+ */
+export function getFieldValuesFromFiles(files, fieldName, parentPath, prefixToRemove = '') {
+  if (!files || files.length === 0) return [];
+  
+  const normalizedFieldName = removePrefixFromFieldName(fieldName, prefixToRemove);
+  const normalizedParentPath = removePrefixFromPath(parentPath || '', prefixToRemove);
+  
+  const valueSet = new Set();
+  
+  files.forEach(file => {
+    if (!file.fields || !Array.isArray(file.fields)) return;
+    
+    file.fields.forEach(field => {
+      // Normalize field name and parent path for comparison
+      const normalizedFieldNameFromFile = removePrefixFromFieldName(field.name, prefixToRemove);
+      const normalizedParentPathFromFile = removePrefixFromPath(field.parentPath || '', prefixToRemove);
+      
+      // Match by field name and parent path
+      if (normalizedFieldNameFromFile === normalizedFieldName && 
+          normalizedParentPathFromFile === normalizedParentPath) {
+        // Collect text content (trimmed, non-empty)
+        const textValue = field.textContent ? field.textContent.trim() : '';
+        if (textValue.length > 0) {
+          valueSet.add(textValue);
+        }
+      }
+    });
+  });
+  
+  // Return sorted array of unique values
+  return Array.from(valueSet).sort((a, b) => a.localeCompare(b));
+}
