@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { comparisonToExcel, compareFields } from '../utils/xmlParser';
+import { comparisonToExcel, compareFields, mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath } from '../utils/xmlParser';
 
 // Component to render hierarchical field list
-function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles }) {
+function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, totalFiles, prefixToRemove = '' }) {
   const toggleExpand = (path) => {
     const newExpanded = new Set(expandedPaths);
     if (newExpanded.has(path)) {
@@ -115,13 +115,13 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
               </button>
             )}
             {!hasChildren && <span style={{ width: '1.75rem', display: 'inline-block' }} />}
-            <code>{field.name}</code>
+            <code>{removePrefixFromFieldName(field.name, prefixToRemove)}</code>
             {field.presentInFiles && totalFiles && field.presentInFiles.length < totalFiles && (
-              <span 
-                style={{ 
-                  fontSize: '0.75rem', 
+              <span
+                style={{
+                  fontSize: '0.75rem',
                   fontWeight: '600',
-                  color: 'var(--primary-color)', 
+                  color: 'var(--primary-color)',
                   backgroundColor: 'rgba(59, 130, 246, 0.1)',
                   padding: '0.125rem 0.375rem',
                   borderRadius: '0.25rem',
@@ -136,10 +136,10 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
               </span>
             )}
             {field.structuralDifference && (
-              <span 
-                style={{ 
-                  fontSize: '0.75rem', 
-                  color: 'var(--warning-color)', 
+              <span
+                style={{
+                  fontSize: '0.75rem',
+                  color: 'var(--warning-color)',
                   fontWeight: 'bold',
                   marginLeft: '0.25rem',
                   cursor: 'help'
@@ -150,7 +150,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
                   if (field.alternativePathsWithFiles && field.alternativePathsWithFiles.length > 0) {
                     parts.push('\n\nAlternative paths:');
                     field.alternativePathsWithFiles.forEach(({ path, files }) => {
-                      parts.push(`\n  • ${path} (in: ${files.join(', ')})`);
+                      parts.push(`\n  • ${removePrefixFromPath(path, prefixToRemove)} (in: ${files.join(', ')})`);
                     });
                   }
                   return parts.join('');
@@ -161,7 +161,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
             )}
             {field.path !== field.name && (
               <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                ({field.path})
+                ({removePrefixFromPath(field.path, prefixToRemove)})
               </span>
             )}
           </div>
@@ -178,7 +178,7 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
   );
 }
 
-function ComparisonView({ comparison, files, filters: filtersProp, setFilters: setFiltersProp }) {
+function ComparisonView({ comparison, files, filters: filtersProp, setFilters: setFiltersProp, prefixToRemove = '', setPrefixToRemove }) {
   const [activeTab, setActiveTab] = useState('summary');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
   const [summaryMode, setSummaryMode] = useState('hierarchical');
@@ -233,13 +233,15 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
       file.fields.forEach(field => {
         const textValue = field.textContent ? field.textContent.trim() : '';
         if (textValue.length > 0) {
-          fieldNames.add(field.name);
+          // Normalize field name for comparison (remove prefix if specified)
+          const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+          fieldNames.add(normalizedName);
         }
       });
     });
 
     return Array.from(fieldNames).sort((a, b) => a.localeCompare(b));
-  }, [files]);
+  }, [files, prefixToRemove]);
 
   const filteredFiles = useMemo(() => {
     if (!isFilterActive) {
@@ -253,7 +255,9 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
           : filterCondition.trimmedValue.toLowerCase();
 
         return file.fields.some(field => {
-          if (field.name !== filterCondition.field) {
+          // Normalize field name for comparison
+          const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+          if (normalizedFieldName !== filterCondition.field) {
             return false;
           }
 
@@ -267,7 +271,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
         });
       })
     );
-  }, [files, isFilterActive, activeFilters]);
+  }, [files, isFilterActive, activeFilters, prefixToRemove]);
 
   const comparisonFiles = filteredFiles;
 
@@ -275,8 +279,8 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     if (!isFilterActive) {
       return comparison;
     }
-    return compareFields(comparisonFiles);
-  }, [comparison, comparisonFiles, isFilterActive]);
+    return compareFields(comparisonFiles, prefixToRemove);
+  }, [comparison, comparisonFiles, isFilterActive, prefixToRemove]);
 
   const aggregation = useMemo(() => {
     if (!activeComparison || !activeComparison.aggregation) {
@@ -503,7 +507,8 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     const structure = {};
 
     fields.forEach(field => {
-      const segments = field.path.split(' > ');
+      const path = removePrefixFromPath(field.path, prefixToRemove);
+      const segments = path.split(' > ');
       let currentLevel = structure;
 
       segments.forEach((segment, index) => {
@@ -531,102 +536,11 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
 
   // Merge all fields from all files, grouping by similar structure
   // For each parent path, show all unique field names from all files
+  // Merge all fields from all files, grouping by similar structure
+  // For each parent path, show all unique field names from all files
   const mergedFields = useMemo(() => {
-    if (comparisonFiles.length === 0) return [];
-
-    // Track all unique field names under each parent path
-    // parentPath -> Map of fieldName -> { field info, presentInFiles }
-    const parentFieldMap = new Map();
-    
-    // First pass: collect all fields grouped by parent path and field name
-    comparisonFiles.forEach(file => {
-      file.fields.forEach(field => {
-        const parentPath = field.parentPath || '';
-        const fieldName = field.name;
-        
-        if (!parentFieldMap.has(parentPath)) {
-          parentFieldMap.set(parentPath, new Map());
-        }
-        
-        const fieldsAtParent = parentFieldMap.get(parentPath);
-        if (!fieldsAtParent.has(fieldName)) {
-          // First time seeing this field name under this parent
-          fieldsAtParent.set(fieldName, {
-            name: fieldName,
-            path: field.path,
-            depth: field.depth,
-            parentPath: parentPath,
-            hasChildren: field.hasChildren,
-            childCount: field.childCount,
-            orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
-            presentInFiles: [file.filename],
-            isNested: field.isNested,
-            hasText: field.hasText,
-            textContent: field.textContent,
-            attributes: field.attributes,
-            occurrences: field.occurrences,
-          });
-        } else {
-          // Field name already exists under this parent, just add to presentInFiles
-          const existing = fieldsAtParent.get(fieldName);
-          if (!existing.presentInFiles.includes(file.filename)) {
-            existing.presentInFiles.push(file.filename);
-          }
-          // Update hasChildren if this file has children (field has children if any file has children)
-          if (field.hasChildren) {
-            existing.hasChildren = true;
-          }
-        }
-      });
-    });
-
-    // Second pass: build the merged field list maintaining structure
-    // Use reference file (first file) to determine the order and structure
-    const merged = [];
-    const processedFieldKeys = new Set(); // Track parentPath + fieldName combinations
-    
-    // Build a function to recursively process fields
-    const processFieldsAtDepth = (depth, parentPath) => {
-      const fieldsAtParent = parentFieldMap.get(parentPath) || new Map();
-      const fieldEntries = Array.from(fieldsAtParent.entries());
-      
-      // Sort by order index from reference file if available
-      fieldEntries.sort(([nameA, fieldA], [nameB, fieldB]) => {
-        // Try to get order from reference file
-        const refFile = comparisonFiles[0];
-        const refFieldA = refFile.fields.find(f => 
-          f.name === nameA && (f.parentPath || '') === parentPath
-        );
-        const refFieldB = refFile.fields.find(f => 
-          f.name === nameB && (f.parentPath || '') === parentPath
-        );
-        
-        const orderA = refFieldA?.orderIndex ?? fieldA.orderIndex;
-        const orderB = refFieldB?.orderIndex ?? fieldB.orderIndex;
-        
-        if (orderA !== orderB) return orderA - orderB;
-        return nameA.localeCompare(nameB);
-      });
-      
-      fieldEntries.forEach(([fieldName, fieldInfo]) => {
-        const key = `${parentPath}|${fieldName}`;
-        if (!processedFieldKeys.has(key)) {
-          processedFieldKeys.add(key);
-          merged.push(fieldInfo);
-          
-          // Recursively process children if this field has children
-          if (fieldInfo.hasChildren) {
-            processFieldsAtDepth(depth + 1, fieldInfo.path);
-          }
-        }
-      });
-    };
-    
-    // Start processing from root (empty parent path)
-    processFieldsAtDepth(0, '');
-    
-    return merged;
-  }, [comparisonFiles]);
+    return mergeFieldsFromFiles(comparisonFiles, prefixToRemove);
+  }, [comparisonFiles, prefixToRemove]);
 
   const collectExpandablePaths = useCallback((fields) => {
     const paths = new Set();
@@ -674,6 +588,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
       filtersSummary: filterSummaryForExport,
       filteredFilesCount: comparisonFiles.length,
       totalFilesCount: files.length,
+      prefixToRemove: prefixToRemove,
     });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
@@ -850,6 +765,29 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
           >
             Clear Filters
           </button>
+          <div className="filter-prefix-input" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <label htmlFor="prefix-to-remove" style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>
+              Remove Prefix:
+            </label>
+            <input
+              id="prefix-to-remove"
+              type="text"
+              placeholder="e.g., ns0:"
+              value={prefixToRemove}
+              onChange={(e) => {
+                if (setPrefixToRemove) {
+                  setPrefixToRemove(e.target.value);
+                }
+              }}
+              style={{
+                padding: '0.5rem',
+                border: '1px solid var(--border-color)',
+                borderRadius: '0.5rem',
+                fontSize: '0.875rem',
+                width: '120px',
+              }}
+            />
+          </div>
         </div>
 
         {isFilterActive && (
@@ -859,7 +797,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                 No files match the selected filters:{' '}
                 {activeFilters.map(filter => (
                   <span key={filter.id}>
-                    <code>{filter.field}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                    <code>{removePrefixFromFieldName(filter.field, prefixToRemove)}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
                   </span>
                 )).reduce((acc, element, idx) => (
                   idx === 0 ? [element] : [...acc, ', ', element]
@@ -870,7 +808,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                 Showing {comparisonFiles.length} of {files.length} files where{' '}
                 {activeFilters.map(filter => (
                   <span key={filter.id}>
-                    <code>{filter.field}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                    <code>{removePrefixFromFieldName(filter.field, prefixToRemove)}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
                   </span>
                 )).reduce((acc, element, idx) => (
                   idx === 0 ? [element] : [...acc, ' and ', element]
@@ -1047,7 +985,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                           <span className={`summary-row-caret ${isExpanded ? 'expanded' : ''}`} aria-hidden="true">
                             {isExpanded ? '▾' : '▸'}
                           </span>
-                          <code>{item.fieldName}</code>
+                          <code>{removePrefixFromFieldName(item.fieldName, prefixToRemove)}</code>
                           <span className="summary-field-pill">
                             {hasValues
                               ? `${item.uniqueValuesCount} value${item.uniqueValuesCount === 1 ? '' : 's'}`
@@ -1073,7 +1011,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                           {item.samplePaths && item.samplePaths.length > 0 ? (
                             item.samplePaths.map(path => (
                               <span key={path} className="summary-path-chip">
-                                {path}
+                                {removePrefixFromPath(path, prefixToRemove)}
                               </span>
                             ))
                           ) : (
@@ -1095,7 +1033,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
 
                           {summaryMode === 'hierarchical' && item.path && (
                             <div className="summary-path-detail">
-                              <strong>Path:</strong> {item.path}
+                              <strong>Path:</strong> {removePrefixFromPath(item.path, prefixToRemove)}
                             </div>
                           )}
 
@@ -1181,16 +1119,16 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
               <p style={{ color: 'var(--text-secondary)' }}>No fields to display</p>
             ) : (
               <>
-                <div style={{ 
-                  padding: '0.75rem', 
-                  backgroundColor: 'rgba(59, 130, 246, 0.1)', 
-                  border: '1px solid var(--primary-color)', 
-                  borderRadius: '0.5rem', 
+                <div style={{
+                  padding: '0.75rem',
+                  backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                  border: '1px solid var(--primary-color)',
+                  borderRadius: '0.5rem',
                   marginBottom: '1rem',
                   fontSize: '0.875rem'
                 }}>
-                  <strong style={{ color: 'var(--primary-color)' }}>ℹ️ Note:</strong> This view shows all unique fields from all files, grouped by their parent structure. 
-                  Fields marked with (X/Y files) appear in X out of Y files. 
+                  <strong style={{ color: 'var(--primary-color)' }}>ℹ️ Note:</strong> This view shows all unique fields from all files, grouped by their parent structure.
+                  Fields marked with (X/Y files) appear in X out of Y files.
                   Hover over the file count to see which files contain each field.
                 </div>
                 <div className="tree-controls" style={{ marginBottom: '1rem' }}>
@@ -1217,6 +1155,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                   setExpandedPaths={setExpandedPaths}
                   type="merged"
                   totalFiles={comparisonFiles.length}
+                  prefixToRemove={prefixToRemove}
                 />
               </>
             )}
@@ -1238,16 +1177,16 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
             ) : (
               <>
                 {Object.keys(activeComparison.structuralDifferences || {}).length > 0 && (
-                  <div style={{ 
-                    padding: '0.75rem', 
-                    backgroundColor: 'rgba(245, 158, 11, 0.1)', 
-                    border: '1px solid var(--warning-color)', 
-                    borderRadius: '0.5rem', 
+                  <div style={{
+                    padding: '0.75rem',
+                    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                    border: '1px solid var(--warning-color)',
+                    borderRadius: '0.5rem',
                     marginBottom: '1rem',
                     fontSize: '0.875rem'
                   }}>
-                    <strong style={{ color: 'var(--warning-color)' }}>⚠️ Note:</strong> Some fields have structural differences. 
-                    Fields marked with ⚠️ exist in all files but at different paths/positions. 
+                    <strong style={{ color: 'var(--warning-color)' }}>⚠️ Note:</strong> Some fields have structural differences.
+                    Fields marked with ⚠️ exist in all files but at different paths/positions.
                     Hover over the warning icon to see alternative paths.
                   </div>
                 )}
@@ -1274,6 +1213,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                   expandedPaths={expandedPaths}
                   setExpandedPaths={setExpandedPaths}
                   type="common"
+                  prefixToRemove={prefixToRemove}
                 />
               </>
             )}
@@ -1301,6 +1241,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                       expandedPaths={expandedPaths}
                       setExpandedPaths={setExpandedPaths}
                       type="unique"
+                      prefixToRemove={prefixToRemove}
                     />
                   </div>
                 ))}

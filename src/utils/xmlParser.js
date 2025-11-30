@@ -6,6 +6,40 @@
 import * as XLSX from 'xlsx';
 
 /**
+ * Remove prefix from field name if it matches exactly
+ * @param {string} fieldName - The field name to process
+ * @param {string} prefix - The prefix to remove (e.g., "ns0:")
+ * @returns {string} Field name with prefix removed if it matched, otherwise original name
+ */
+export function removePrefixFromFieldName(fieldName, prefix) {
+  if (!prefix || !fieldName || typeof fieldName !== 'string' || typeof prefix !== 'string') {
+    return fieldName;
+  }
+  
+  if (fieldName.startsWith(prefix)) {
+    return fieldName.substring(prefix.length);
+  }
+  
+  return fieldName;
+}
+
+/**
+ * Remove prefix from all segments in a path
+ * @param {string} path - The path to process (e.g., "ns0:Parent > ns0:Child")
+ * @param {string} prefix - The prefix to remove (e.g., "ns0:")
+ * @returns {string} Path with prefix removed from matching segments
+ */
+export function removePrefixFromPath(path, prefix) {
+  if (!prefix || !path || typeof path !== 'string' || typeof prefix !== 'string') {
+    return path;
+  }
+  
+  const segments = path.split(' > ');
+  const cleanedSegments = segments.map(segment => removePrefixFromFieldName(segment, prefix));
+  return cleanedSegments.join(' > ');
+}
+
+/**
  * Check if content contains XML elements
  * @param {string} content - The content to check
  * @returns {boolean} True if XML content is detected
@@ -201,9 +235,10 @@ export function createFieldTree(xmlDoc) {
 /**
  * Compare fields from multiple XML files
  * @param {Array} fileDataArray - Array of {filename, fields} objects
+ * @param {string} prefixToRemove - Optional prefix to remove from field names for comparison
  * @returns {Object} Comparison results
  */
-export function compareFields(fileDataArray) {
+export function compareFields(fileDataArray, prefixToRemove = '') {
   if (fileDataArray.length === 0) {
     return {
       commonFields: [],
@@ -221,11 +256,12 @@ export function compareFields(fileDataArray) {
     };
   }
 
-  // Get all unique field names
+  // Get all unique field names (normalized for comparison)
   const allFieldNames = new Set();
   fileDataArray.forEach(fileData => {
     fileData.fields.forEach(field => {
-      allFieldNames.add(field.name);
+      const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+      allFieldNames.add(normalizedName);
     });
   });
 
@@ -246,9 +282,10 @@ export function compareFields(fileDataArray) {
 
   // Pre-create stats entries when seeing fields
   const ensureFieldNameEntry = (field) => {
-    if (!fieldNameStats.has(field.name)) {
-      fieldNameStats.set(field.name, {
-        fieldName: field.name,
+    const normalizedName = removePrefixFromFieldName(field.name, prefixToRemove);
+    if (!fieldNameStats.has(normalizedName)) {
+      fieldNameStats.set(normalizedName, {
+        fieldName: normalizedName, // Store normalized name for comparison
         filesWithField: new Set(),
         totalOccurrences: 0,
         occurrencesPerFile: {},
@@ -257,19 +294,24 @@ export function compareFields(fileDataArray) {
         valueCounts: new Map(),
       });
     }
-    const entry = fieldNameStats.get(field.name);
-    entry.paths.add(field.path);
+    const entry = fieldNameStats.get(normalizedName);
+    const normalizedPath = removePrefixFromPath(field.path, prefixToRemove);
+    entry.paths.add(normalizedPath);
     entry.depths.add(field.depth);
     return entry;
   };
 
   const ensureFieldPathEntry = (field) => {
-    if (!fieldPathStats.has(field.path)) {
-      fieldPathStats.set(field.path, {
-        path: field.path,
-        fieldName: field.name,
+    const normalizedPath = removePrefixFromPath(field.path, prefixToRemove);
+    const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+    const normalizedParentPath = removePrefixFromPath(field.parentPath || '', prefixToRemove);
+    
+    if (!fieldPathStats.has(normalizedPath)) {
+      fieldPathStats.set(normalizedPath, {
+        path: normalizedPath,
+        fieldName: normalizedFieldName,
         depth: field.depth,
-        parentPath: field.parentPath || '',
+        parentPath: normalizedParentPath,
         filesWithPath: new Set(),
         totalOccurrences: 0,
         occurrencesPerFile: {},
@@ -279,7 +321,7 @@ export function compareFields(fileDataArray) {
         valueCounts: new Map(),
       });
     } else {
-      const existingEntry = fieldPathStats.get(field.path);
+      const existingEntry = fieldPathStats.get(normalizedPath);
       existingEntry.hasChildren = existingEntry.hasChildren || field.hasChildren;
       if (typeof field.childCount === 'number') {
         const existingCount = typeof existingEntry.childCount === 'number' ? existingEntry.childCount : 0;
@@ -290,7 +332,7 @@ export function compareFields(fileDataArray) {
         existingEntry.orderIndex = Math.min(currentOrder, field.orderIndex);
       }
     }
-    return fieldPathStats.get(field.path);
+    return fieldPathStats.get(normalizedPath);
   };
 
   fileDataArray.forEach(fileData => {
@@ -333,14 +375,17 @@ export function compareFields(fileDataArray) {
         });
       }
 
+      const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+      const normalizedFieldPath = removePrefixFromPath(field.path, prefixToRemove);
+      
       perFileNameCounts.set(
-        field.name,
-        (perFileNameCounts.get(field.name) || 0) + occurrences
+        normalizedFieldName,
+        (perFileNameCounts.get(normalizedFieldName) || 0) + occurrences
       );
 
       perFilePathCounts.set(
-        field.path,
-        (perFilePathCounts.get(field.path) || 0) + occurrences
+        normalizedFieldPath,
+        (perFilePathCounts.get(normalizedFieldPath) || 0) + occurrences
       );
     });
 
@@ -369,9 +414,9 @@ export function compareFields(fileDataArray) {
   allFieldNames.forEach(fieldName => {
     const pathsInFiles = new Map();
     fileDataArray.forEach(fileData => {
-      const matchingFields = fileData.fields.filter(f => f.name === fieldName);
+      const matchingFields = fileData.fields.filter(f => removePrefixFromFieldName(f.name, prefixToRemove) === fieldName);
       if (matchingFields.length > 0) {
-        pathsInFiles.set(fileData.filename, matchingFields.map(f => f.path));
+        pathsInFiles.set(fileData.filename, matchingFields.map(f => removePrefixFromPath(f.path, prefixToRemove)));
       }
     });
     
@@ -399,25 +444,31 @@ export function compareFields(fileDataArray) {
   // Include fields that exist in all files (by name), using reference file structure for display
   const referenceFile = fileDataArray[0];
   
-  // First, get all field names that exist in ALL files
-  const commonFieldNames = Array.from(allFieldNames).filter(fieldName => {
-    return fileDataArray.every(fileData =>
-      fileData.fields.some(f => f.name === fieldName)
-    );
-  });
+  let commonFields = [];
+  
+  if (referenceFile && referenceFile.fields && Array.isArray(referenceFile.fields)) {
+    // First, get all field names that exist in ALL files (using normalized names)
+    const commonFieldNames = Array.from(allFieldNames).filter(fieldName => {
+      return fileDataArray.every(fileData =>
+        fileData.fields && Array.isArray(fileData.fields) && fileData.fields.some(f => f && removePrefixFromFieldName(f.name, prefixToRemove) === fieldName)
+      );
+    });
 
-  // Build common fields from reference file structure
-  // Include all fields from reference file that have the same name in all files
-  const commonFields = referenceFile.fields
-    .filter(field => commonFieldNames.includes(field.name))
-    .map(field => {
-      // Check if this field has structural differences (same name, different paths)
-      const hasStructuralDiff = structuralDifferences.has(field.name);
-      const structuralInfo = hasStructuralDiff ? structuralDifferences.get(field.name) : null;
+    // Build common fields from reference file structure
+    // Include all fields from reference file that have the same normalized name in all files
+    commonFields = referenceFile.fields
+      .filter(field => field && field.name && commonFieldNames.includes(removePrefixFromFieldName(field.name, prefixToRemove)))
+      .map(field => {
+      const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+      const normalizedFieldPath = removePrefixFromPath(field.path, prefixToRemove);
       
-      // Verify this exact path exists in all files
+      // Check if this field has structural differences (same normalized name, different paths)
+      const hasStructuralDiff = structuralDifferences.has(normalizedFieldName);
+      const structuralInfo = hasStructuralDiff ? structuralDifferences.get(normalizedFieldName) : null;
+      
+      // Verify this exact normalized path exists in all files
       const pathExistsInAllFiles = fileDataArray.every(fileData =>
-        fileData.fields.some(f => f.path === field.path)
+        fileData.fields && Array.isArray(fileData.fields) && fileData.fields.some(f => f && removePrefixFromPath(f.path, prefixToRemove) === normalizedFieldPath)
       );
       
       // Build alternative paths with file information
@@ -442,19 +493,26 @@ export function compareFields(fileDataArray) {
       }
       
       return {
-        name: field.name,
-        path: field.path,
+        name: normalizedFieldName, // Use normalized name
+        path: normalizedFieldPath, // Use normalized path
         depth: field.depth,
-        hasChildren: field.hasChildren,
-        childCount: field.childCount,
+        hasChildren: field.hasChildren || false,
+        childCount: field.childCount || 0,
+        hasText: field.hasText !== undefined ? field.hasText : (field.textContent && typeof field.textContent === 'string' && field.textContent.trim().length > 0),
+        textContent: field.textContent || '',
         structuralDifference: hasStructuralDiff,
         pathExistsInAllFiles: pathExistsInAllFiles,
-        alternativePaths: structuralInfo ? structuralInfo.paths.filter(p => p !== field.path) : [],
-        alternativePathsWithFiles: alternativePathsWithFiles,
+        alternativePaths: structuralInfo ? structuralInfo.paths.filter(p => p !== normalizedFieldPath) : [],
+        alternativePathsWithFiles: alternativePathsWithFiles.map(ap => ({
+          ...ap,
+          path: removePrefixFromPath(ap.path, prefixToRemove)
+        })),
         orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
-        parentPath: field.parentPath || ''
+        parentPath: removePrefixFromPath(field.parentPath || '', prefixToRemove),
+        attributes: field.attributes || []
       };
     });
+  }
   // Don't sort here - preserve the original XML order from reference file
 
   // Find unique fields for each file (fields that exist ONLY in that file, not in any other file)
@@ -462,17 +520,18 @@ export function compareFields(fileDataArray) {
   fileDataArray.forEach(fileData => {
     // Find fields that are unique to this file (present in this file but not in any other file)
     const uniqueToThisFile = fileData.fields.filter(field => {
-      // Check if this field path exists in any other file
+      const normalizedFieldPath = removePrefixFromPath(field.path, prefixToRemove);
+      // Check if this normalized field path exists in any other file
       const existsInOtherFile = fileDataArray.some(otherFile => {
         if (otherFile.filename === fileData.filename) return false; // Skip self
-        return otherFile.fields.some(f => f.path === field.path);
+        return otherFile.fields.some(f => removePrefixFromPath(f.path, prefixToRemove) === normalizedFieldPath);
       });
       return !existsInOtherFile;
     });
     
     uniqueFields[fileData.filename] = uniqueToThisFile.map(f => ({
-      name: f.name,
-      path: f.path,
+      name: removePrefixFromFieldName(f.name, prefixToRemove),
+      path: removePrefixFromPath(f.path, prefixToRemove),
       depth: f.depth
     }));
   });
@@ -489,7 +548,7 @@ export function compareFields(fileDataArray) {
     };
 
     fileDataArray.forEach(fileData => {
-      const fieldData = fileData.fields.find(f => f.name === fieldName);
+      const fieldData = fileData.fields.find(f => removePrefixFromFieldName(f.name, prefixToRemove) === fieldName);
       if (fieldData) {
         differences.presentIn.push(fileData.filename);
         if (!differences.depthVariations[fieldData.depth]) {
@@ -592,9 +651,10 @@ export function compareFields(fileDataArray) {
  * Export fields to CSV format
  * @param {Array} fields - Array of field objects
  * @param {string} filename - Output filename
+ * @param {string} prefixToRemove - Optional prefix to remove from field names and paths
  * @returns {string} CSV content
  */
-export function fieldsToCSV(fields, filename = 'fields.csv') {
+export function fieldsToCSV(fields, filename = 'fields.csv', prefixToRemove = '') {
   const headers = [
     'Field Name',
     'Depth',
@@ -609,9 +669,9 @@ export function fieldsToCSV(fields, filename = 'fields.csv') {
   ];
 
   const rows = fields.map(field => [
-    field.name,
+    removePrefixFromFieldName(field.name, prefixToRemove),
     field.depth,
-    field.path,
+    removePrefixFromPath(field.path, prefixToRemove),
     field.isNested ? 'Yes' : 'No',
     field.hasChildren ? 'Yes' : 'No',
     field.childCount,
@@ -633,9 +693,10 @@ export function fieldsToCSV(fields, filename = 'fields.csv') {
  * Export comparison results to CSV
  * @param {Object} comparison - Comparison results from compareFields
  * @param {Array} mergedFields - Optional merged fields array from all files
+ * @param {string} prefixToRemove - Optional prefix to remove from field names and paths
  * @returns {string} CSV content
  */
-export function comparisonToCSV(comparison, mergedFields = null) {
+export function comparisonToCSV(comparison, mergedFields = null, prefixToRemove = '') {
   let csvContent = 'Field Comparison Report\n\n';
 
   // Merged View section (if provided)
@@ -643,8 +704,8 @@ export function comparisonToCSV(comparison, mergedFields = null) {
     csvContent += 'Merged View (All Fields from All Files)\n';
     csvContent += 'Field Name,Path,Depth,Present In Files,Files Count\n';
     mergedFields.forEach(field => {
-      const fieldName = field.name || '';
-      const fieldPath = field.path || '';
+      const fieldName = removePrefixFromFieldName(field.name || '', prefixToRemove);
+      const fieldPath = removePrefixFromPath(field.path || '', prefixToRemove);
       const fieldDepth = field.depth !== undefined ? field.depth : 0;
       const presentInFiles = field.presentInFiles ? field.presentInFiles.join('; ') : '';
       const filesCount = field.presentInFiles ? `${field.presentInFiles.length}` : '0';
@@ -661,8 +722,8 @@ export function comparisonToCSV(comparison, mergedFields = null) {
     const fieldPath = typeof field === 'string' ? field : field.path;
     const fieldDepth = typeof field === 'string' ? 0 : field.depth;
     const hasStructuralDiff = typeof field === 'object' && field.structuralDifference ? 'Yes' : 'No';
-    const altPaths = typeof field === 'object' && field.alternativePaths ? field.alternativePaths.join('; ') : '';
-    csvContent += `"${fieldName}","${fieldPath}",${fieldDepth},"${hasStructuralDiff}","${altPaths}"\n`;
+    const altPaths = typeof field === 'object' && field.alternativePaths ? field.alternativePaths.map(p => removePrefixFromPath(p, prefixToRemove)).join('; ') : '';
+    csvContent += `"${removePrefixFromFieldName(fieldName, prefixToRemove)}","${removePrefixFromPath(fieldPath, prefixToRemove)}",${fieldDepth},"${hasStructuralDiff}","${altPaths}"\n`;
   });
 
   csvContent += '\n\nUnique Fields\n';
@@ -672,7 +733,7 @@ export function comparisonToCSV(comparison, mergedFields = null) {
       const fieldName = typeof field === 'string' ? field : field.name;
       const fieldPath = typeof field === 'string' ? field : field.path;
       const fieldDepth = typeof field === 'string' ? 0 : field.depth;
-      csvContent += `"${filename}","${fieldName}","${fieldPath}",${fieldDepth}\n`;
+      csvContent += `"${filename}","${removePrefixFromFieldName(fieldName, prefixToRemove)}","${removePrefixFromPath(fieldPath, prefixToRemove)}",${fieldDepth}\n`;
     });
   });
 
@@ -680,7 +741,7 @@ export function comparisonToCSV(comparison, mergedFields = null) {
   csvContent += 'Field Name,Present In,Absent In\n';
 
   Object.values(comparison.fieldDifferences).forEach(diff => {
-    csvContent += `"${diff.fieldName}","${diff.presentIn.join('; ')}","${diff.absentIn.join('; ')}"\n`;
+    csvContent += `"${removePrefixFromFieldName(diff.fieldName, prefixToRemove)}","${diff.presentIn.join('; ')}","${diff.absentIn.join('; ')}"\n`;
   });
 
   return csvContent;
@@ -720,7 +781,7 @@ export function comparisonToExcel(comparison, mergedFields = null, options = {})
   // Summary sheet
   const summarySheetData = [];
 
-  const { filtersSummary = null, filteredFilesCount = null, totalFilesCount = null } = options;
+  const { filtersSummary = null, filteredFilesCount = null, totalFilesCount = null, prefixToRemove = '' } = options;
 
   if (filtersSummary) {
     summarySheetData.push(['Filters Applied', clampExcelText(filtersSummary)]);
@@ -763,7 +824,7 @@ export function comparisonToExcel(comparison, mergedFields = null, options = {})
   }
 
   const fieldCoverageRows = (aggregation.fieldNameSummary || []).map(entry => ([
-      clampExcelText(entry.fieldName || ''),
+      clampExcelText(removePrefixFromFieldName(entry.fieldName || '', prefixToRemove)),
       entry.filesWithField ?? 0,
       entry.filesMissingField ?? 0,
       entry.presencePercent ? Number(entry.presencePercent.toFixed(1)) : 0,
@@ -795,8 +856,8 @@ export function comparisonToExcel(comparison, mergedFields = null, options = {})
   // Merged View sheet
   if (mergedFields && mergedFields.length > 0) {
     const mergedData = mergedFields.map(field => ({
-      'Field Name': clampExcelText(field.name || ''),
-      'Path': clampExcelText(field.path || ''),
+      'Field Name': clampExcelText(removePrefixFromFieldName(field.name || '', prefixToRemove)),
+      'Path': clampExcelText(removePrefixFromPath(field.path || '', prefixToRemove)),
       'Depth': field.depth !== undefined ? field.depth : 0,
       'Files Count': field.presentInFiles ? field.presentInFiles.length : 0,
     }));
@@ -804,15 +865,20 @@ export function comparisonToExcel(comparison, mergedFields = null, options = {})
   }
 
   // Common Fields sheet
-  const commonData = comparison.commonFields.map(field => ({
-    'Field Name': clampExcelText(typeof field === 'string' ? field : field.name),
-    'Path': clampExcelText(typeof field === 'string' ? field : field.path),
-    'Depth': typeof field === 'string' ? 0 : field.depth,
-    'Structural Difference': typeof field === 'object' && field.structuralDifference ? 'Yes' : 'No',
-    'Alternative Paths': clampExcelText(
-      typeof field === 'object' && field.alternativePaths ? field.alternativePaths.join('; ') : ''
-    ),
-  }));
+  const commonData = comparison.commonFields.map(field => {
+    const fieldName = typeof field === 'string' ? field : field.name;
+    const fieldPath = typeof field === 'string' ? field : field.path;
+    const altPaths = typeof field === 'object' && field.alternativePaths 
+      ? field.alternativePaths.map(p => removePrefixFromPath(p, prefixToRemove)).join('; ')
+      : '';
+    return {
+      'Field Name': clampExcelText(removePrefixFromFieldName(fieldName, prefixToRemove)),
+      'Path': clampExcelText(removePrefixFromPath(fieldPath, prefixToRemove)),
+      'Depth': typeof field === 'string' ? 0 : field.depth,
+      'Structural Difference': typeof field === 'object' && field.structuralDifference ? 'Yes' : 'No',
+      'Alternative Paths': clampExcelText(altPaths),
+    };
+  });
   createWorksheet(commonData, 'Common Fields');
 
   // Unique Fields sheet
@@ -823,10 +889,12 @@ export function comparisonToExcel(comparison, mergedFields = null, options = {})
       return;
     }
     fields.forEach(field => {
+      const fieldName = typeof field === 'string' ? field : field.name;
+      const fieldPath = typeof field === 'string' ? field : field.path;
       uniqueData.push({
         'File Group #': uniqueGroupIndex,
-        'Field Name': clampExcelText(typeof field === 'string' ? field : field.name),
-        'Path': clampExcelText(typeof field === 'string' ? field : field.path),
+        'Field Name': clampExcelText(removePrefixFromFieldName(fieldName, prefixToRemove)),
+        'Path': clampExcelText(removePrefixFromPath(fieldPath, prefixToRemove)),
         'Depth': typeof field === 'string' ? 0 : field.depth,
       });
     });
@@ -856,4 +924,148 @@ export function getXMLStatistics(fields) {
   };
 
   return stats;
+}
+
+/**
+ * Merge fields from multiple files, grouping by similar structure
+ * @param {Array} files - Array of file objects with fields
+ * @returns {Array} Merged fields array
+ */
+export function mergeFieldsFromFiles(files, prefixToRemove = '') {
+  if (!files || files.length === 0) return [];
+
+  // Track all unique field names under each parent path
+  // parentPath -> Map of fieldName -> { field info, presentInFiles }
+  const parentFieldMap = new Map();
+  
+  // First pass: collect all fields grouped by parent path and field name
+  files.forEach(file => {
+    file.fields.forEach(field => {
+      const normalizedParentPath = removePrefixFromPath(field.parentPath || '', prefixToRemove);
+      const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+      const normalizedPath = removePrefixFromPath(field.path, prefixToRemove);
+      
+      if (!parentFieldMap.has(normalizedParentPath)) {
+        parentFieldMap.set(normalizedParentPath, new Map());
+      }
+      
+      const fieldsAtParent = parentFieldMap.get(normalizedParentPath);
+      if (!fieldsAtParent.has(normalizedFieldName)) {
+        // First time seeing this normalized field name under this normalized parent
+        fieldsAtParent.set(normalizedFieldName, {
+          name: normalizedFieldName,
+          path: normalizedPath,
+          depth: field.depth,
+          parentPath: normalizedParentPath,
+          hasChildren: field.hasChildren,
+          childCount: field.childCount,
+          orderIndex: field.orderIndex !== undefined ? field.orderIndex : 999999,
+          presentInFiles: [file.filename],
+          isNested: field.isNested,
+          hasText: field.hasText,
+          textContent: field.textContent,
+          attributes: field.attributes,
+          occurrences: field.occurrences,
+        });
+      } else {
+        // Normalized field name already exists under this normalized parent, just add to presentInFiles
+        const existing = fieldsAtParent.get(normalizedFieldName);
+        if (!existing.presentInFiles.includes(file.filename)) {
+          existing.presentInFiles.push(file.filename);
+        }
+        // Update hasChildren if this file has children (field has children if any file has children)
+        if (field.hasChildren) {
+          existing.hasChildren = true;
+        }
+      }
+    });
+  });
+
+  // Second pass: build the merged field list maintaining structure
+  // Use reference file (first file) to determine the order and structure
+  const merged = [];
+  const processedFieldKeys = new Set(); // Track parentPath + fieldName combinations
+  
+  // Build a function to recursively process fields
+  const processFieldsAtDepth = (depth, parentPath) => {
+    const fieldsAtParent = parentFieldMap.get(parentPath) || new Map();
+    const fieldEntries = Array.from(fieldsAtParent.entries());
+    
+    // Sort by order index from reference file if available
+    fieldEntries.sort(([nameA, fieldA], [nameB, fieldB]) => {
+      // Try to get order from reference file (using normalized names/paths for comparison)
+      const refFile = files[0];
+      const refFieldA = refFile.fields.find(f => 
+        removePrefixFromFieldName(f.name, prefixToRemove) === nameA && removePrefixFromPath(f.parentPath || '', prefixToRemove) === parentPath
+      );
+      const refFieldB = refFile.fields.find(f => 
+        removePrefixFromFieldName(f.name, prefixToRemove) === nameB && removePrefixFromPath(f.parentPath || '', prefixToRemove) === parentPath
+      );
+      
+      const orderA = refFieldA?.orderIndex ?? fieldA.orderIndex;
+      const orderB = refFieldB?.orderIndex ?? fieldB.orderIndex;
+      
+      if (orderA !== orderB) return orderA - orderB;
+      return nameA.localeCompare(nameB);
+    });
+    
+    fieldEntries.forEach(([fieldName, fieldInfo]) => {
+      const key = `${parentPath}|${fieldName}`;
+      if (!processedFieldKeys.has(key)) {
+        processedFieldKeys.add(key);
+        merged.push(fieldInfo);
+        
+        // Recursively process children if this field has children
+        if (fieldInfo.hasChildren) {
+          processFieldsAtDepth(depth + 1, fieldInfo.path);
+        }
+      }
+    });
+  };
+  
+  // Start processing from root (empty parent path)
+  processFieldsAtDepth(0, '');
+  
+  return merged;
+}
+
+/**
+ * Get all unique values for a field from source files
+ * Matches fields by normalized field name and normalized parent path
+ * @param {Array} files - Array of file objects with fields
+ * @param {string} fieldName - The field name to match
+ * @param {string} parentPath - The parent path to match
+ * @param {string} prefixToRemove - Optional prefix to remove from field names and paths
+ * @returns {Array} Array of unique values (trimmed, non-empty, sorted alphabetically)
+ */
+export function getFieldValuesFromFiles(files, fieldName, parentPath, prefixToRemove = '') {
+  if (!files || files.length === 0) return [];
+  
+  const normalizedFieldName = removePrefixFromFieldName(fieldName, prefixToRemove);
+  const normalizedParentPath = removePrefixFromPath(parentPath || '', prefixToRemove);
+  
+  const valueSet = new Set();
+  
+  files.forEach(file => {
+    if (!file.fields || !Array.isArray(file.fields)) return;
+    
+    file.fields.forEach(field => {
+      // Normalize field name and parent path for comparison
+      const normalizedFieldNameFromFile = removePrefixFromFieldName(field.name, prefixToRemove);
+      const normalizedParentPathFromFile = removePrefixFromPath(field.parentPath || '', prefixToRemove);
+      
+      // Match by field name and parent path
+      if (normalizedFieldNameFromFile === normalizedFieldName && 
+          normalizedParentPathFromFile === normalizedParentPath) {
+        // Collect text content (trimmed, non-empty)
+        const textValue = field.textContent ? field.textContent.trim() : '';
+        if (textValue.length > 0) {
+          valueSet.add(textValue);
+        }
+      }
+    });
+  });
+  
+  // Return sorted array of unique values
+  return Array.from(valueSet).sort((a, b) => a.localeCompare(b));
 }

@@ -3,6 +3,7 @@ import './App.css';
 import FileUpload from './components/FileUpload';
 import FieldsViewer from './components/FieldsViewer';
 import ComparisonView from './components/ComparisonView';
+import GeneratorView from './components/GeneratorView';
 import Statistics from './components/Statistics';
 import { parseXML, extractFields, createFieldTree, compareFields, hasXMLContent } from './utils/xmlParser';
 
@@ -46,7 +47,8 @@ function App() {
   const [files, setFiles] = useState([]);
   const [activeTab, setActiveTab] = useState('single');
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
-  
+  const [prefixToRemove, setPrefixToRemove] = useState('');
+
   // Persist comparison filters across tab switches
   const createEmptyFilter = () => ({
     id: `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -131,7 +133,7 @@ function App() {
   };
 
   const currentFile = files[selectedFileIndex];
-  const comparison = files.length > 1 ? compareFields(files) : null;
+  const comparison = files.length > 1 ? compareFields(files, prefixToRemove) : null;
 
   return (
     <div className="app">
@@ -206,21 +208,37 @@ function App() {
                     Compare Files
                   </button>
                 )}
+                <button
+                  className={`tab ${activeTab === 'generator' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('generator')}
+                >
+                  Generate XML
+                </button>
               </div>
 
               {activeTab === 'single' && currentFile && (
                 <div className="content-section">
                   <Statistics file={currentFile} />
-                  <FieldsViewer file={currentFile} />
+                  <FieldsViewer file={currentFile} prefixToRemove={prefixToRemove} />
                 </div>
               )}
 
               {activeTab === 'comparison' && comparison && (
-                <ComparisonView 
-                  comparison={comparison} 
+                <ComparisonView
+                  comparison={comparison}
                   files={files}
                   filters={comparisonFilters}
                   setFilters={setComparisonFilters}
+                  prefixToRemove={prefixToRemove}
+                  setPrefixToRemove={setPrefixToRemove}
+                />
+              )}
+
+              {activeTab === 'generator' && (
+                <GeneratorView
+                  files={files}
+                  comparison={comparison}
+                  prefixToRemove={prefixToRemove}
                 />
               )}
             </>
