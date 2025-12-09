@@ -1772,3 +1772,142 @@ body {
   display: flex;
   gap: 0.5rem;
 }
+
+/* Filter Comparison Styles */
+.filter-panel {
+  background-color: var(--surface-color);
+  border: 1px solid var(--border-color);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.filter-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.filter-panel-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.filter-panel-count {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.filter-comparison-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.filter-comparison-toggle {
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.filter-comparison-panels .summary-table {
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+/* Split view summary tables */
+.split-view-container {
+  min-height: 600px;
+}
+
+.split-view-container > div {
+  max-height: 700px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0; /* Allow shrinking below content size */
+}
+
+.split-view-container .summary-table {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto; /* Enable horizontal scrolling */
+  min-height: 0;
+  width: 100%;
+}
+
+.split-view-container .summary-table {
+  display: block; /* Ensure proper table layout */
+}
+
+.split-view-container .summary-table-header,
+.split-view-container .summary-table-row {
+  display: grid !important;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  /* Override base grid-template-columns to match split view columns */
+  grid-template-columns: minmax(280px, 1fr) 90px 90px 110px !important;
+}
+
+.split-view-container .summary-field-name {
+  min-width: 0; /* Allow text truncation if needed */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.split-view-container .summary-table-header {
+  display: grid !important;
+  grid-template-columns: minmax(280px, 1fr) 90px 90px 110px !important;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.split-view-container .summary-table-header > div:nth-child(n+2),
+.split-view-container .summary-table-row > div:nth-child(n+2) {
+  text-align: center;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 1.5rem;
+}
+
+/* Ensure all numeric columns in split view have consistent styling */
+.split-view-container .summary-files-count,
+.split-view-container .summary-presence,
+.split-view-container .summary-occurrences {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-weight: 600 !important;
+  font-size: 0.85rem !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  line-height: 1.5 !important;
+  min-height: 1.5rem !important;
+}
+
+.split-view-container .summary-occurrences {
+  flex-direction: row !important; /* Override column direction from base CSS */
+  gap: 0 !important;
+}
+
+@media (max-width: 1024px) {
+  .filter-comparison-panels {
+    grid-template-columns: 1fr;
+  }
+  
+  .split-view-container {
+    grid-template-columns: 1fr !important;
+  }
+}

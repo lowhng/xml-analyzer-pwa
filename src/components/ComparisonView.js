@@ -178,6 +178,370 @@ function HierarchicalFieldList({ fields, expandedPaths, setExpandedPaths, type, 
   );
 }
 
+// Reusable Summary Table Component for Split View
+function SummaryTablePanel({
+  title,
+  summaryRows,
+  aggregation,
+  summaryMode,
+  prefixToRemove,
+  expandedRowKey,
+  onRowClick,
+  showAllValues,
+  onToggleShowAll,
+  visibleCount = 100,
+  hideDepth = false, // For split view - remove depth column
+}) {
+  const visibleRows = summaryRows.slice(0, visibleCount);
+  // Grid template: Field Name | Depth (if not hidden) | Files | Presence | Occurrences
+  // Make Field Name column wider to prevent "snake" layout and keep columns aligned
+  // Use fixed widths for numeric columns to ensure alignment
+  const gridColumns = hideDepth 
+    ? 'minmax(280px, 1fr) 90px 90px 110px' 
+    : (summaryMode === 'hierarchical' ? 'minmax(140px, 2fr) 50px 60px 70px 100px' : 'minmax(140px, 2fr) 60px 70px 100px');
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minWidth: 0 }}>
+      <h4 style={{ marginBottom: '1rem', color: 'var(--text-primary)', fontSize: '1rem', fontWeight: 600 }}>
+        {title}
+      </h4>
+      <div className="summary-cards" style={{ marginBottom: '1rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+        <div className="summary-card">
+          <div className="card-label">Files</div>
+          <div className="card-value" style={{ fontSize: '1.5rem' }}>{aggregation.filesCount}</div>
+        </div>
+        <div className="summary-card">
+          <div className="card-label">Unique Fields</div>
+          <div className="card-value" style={{ fontSize: '1.5rem' }}>{aggregation.uniqueFieldNames}</div>
+        </div>
+      </div>
+      <div className="summary-table" style={{ flex: 1, overflow: 'auto', overflowX: 'auto' }}>
+        <div className="summary-table-header" style={{ gridTemplateColumns: gridColumns, position: 'sticky', top: 0, backgroundColor: 'var(--bg-color)', zIndex: 10 }}>
+          <div>Field Name</div>
+          {summaryMode === 'hierarchical' && !hideDepth && <div>Depth</div>}
+          <div>Files</div>
+          <div>Presence</div>
+          <div>Occurrences</div>
+        </div>
+        {visibleRows.map(item => {
+          const rowKey = item.uniqueKey || item.fieldName;
+          const isExpanded = expandedRowKey === rowKey;
+          const valueCounts = item.valueCounts || [];
+          const showAllValuesForRow = !!showAllValues[rowKey];
+          const displayedValueCounts = showAllValuesForRow ? valueCounts : valueCounts.slice(0, 5);
+          const hasAdditionalValues = valueCounts.length > 5;
+          const hasValues = valueCounts.length > 0;
+          const indentLevel = summaryMode === 'hierarchical' ? Math.max(item.depth || 0, 0) : 0;
+          const depthDisplay = typeof item.depth === 'number' ? item.depth : (item.pathSegments ? item.pathSegments.length - 1 : 0);
+          const rowClassNames = [
+            'summary-table-row',
+            'summary-table-row--interactive',
+            isExpanded ? 'expanded' : '',
+            summaryMode === 'hierarchical' && item.hasChildren ? 'summary-table-row--hierarchical' : '',
+          ].filter(Boolean).join(' ');
+
+          const handleToggleShowAll = (event) => {
+            event.stopPropagation();
+            if (onToggleShowAll) {
+              onToggleShowAll(rowKey);
+            }
+          };
+
+          return (
+            <React.Fragment key={rowKey}>
+              <div
+                className={rowClassNames}
+                role="button"
+                tabIndex={0}
+                onClick={() => onRowClick && onRowClick(rowKey)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onRowClick && onRowClick(rowKey);
+                  }
+                }}
+                aria-expanded={isExpanded}
+                style={{ gridTemplateColumns: gridColumns, display: 'grid' }}
+              >
+                <div className={`summary-field-name ${summaryMode === 'hierarchical' ? 'summary-field-name--hierarchy' : ''}`}>
+                  {summaryMode === 'hierarchical' && indentLevel > 0 && (
+                    <span
+                      className="summary-hierarchy-offset"
+                      style={{ width: `${indentLevel * 1.25}rem` }}
+                      aria-hidden="true"
+                    >
+                      <span className="summary-hierarchy-marker" />
+                    </span>
+                  )}
+                  <span className={`summary-row-caret ${isExpanded ? 'expanded' : ''}`} aria-hidden="true">
+                    {isExpanded ? '▾' : '▸'}
+                  </span>
+                  <code>{removePrefixFromFieldName(item.fieldName, prefixToRemove)}</code>
+                  {hasValues && (
+                    <span className="summary-field-pill" style={{ fontSize: '0.7rem', padding: '0.15rem 0.5rem' }}>
+                      {item.uniqueValuesCount} value{item.uniqueValuesCount === 1 ? '' : 's'}
+                    </span>
+                  )}
+                </div>
+                {summaryMode === 'hierarchical' && !hideDepth && (
+                  <div className="summary-depth" style={{ fontSize: '0.8rem' }}>
+                    {depthDisplay}
+                  </div>
+                )}
+                <div className="summary-files-count" style={{ fontSize: '0.85rem', textAlign: 'center', fontWeight: 600 }}>
+                  {item.filesWithField}/{aggregation.filesCount}
+                </div>
+                <div className="summary-presence" style={{ fontSize: '0.85rem', textAlign: 'center', fontWeight: 600 }}>
+                  {item.presencePercent.toFixed(0)}%
+                </div>
+                <div className="summary-occurrences" style={{ fontSize: '0.85rem', textAlign: 'center', fontWeight: 600, display: 'block' }}>
+                  {item.totalOccurrences}
+                </div>
+              </div>
+
+              {isExpanded && (
+                <div className="summary-row-details" style={{ gridColumn: '1 / -1', padding: '0.75rem 1rem' }}>
+                  <div className="summary-values-header" style={{ fontSize: '0.8rem' }}>
+                    <span>
+                      <strong>Unique values:</strong> {item.uniqueValuesCount}
+                    </span>
+                    <span>
+                      <strong>Total occurrences:</strong> {item.totalOccurrences}
+                    </span>
+                  </div>
+
+                  {summaryMode === 'hierarchical' && item.path && (
+                    <div className="summary-path-detail" style={{ fontSize: '0.75rem' }}>
+                      <strong>Path:</strong> {removePrefixFromPath(item.path, prefixToRemove)}
+                    </div>
+                  )}
+
+                  {hasValues ? (
+                    <>
+                      <ul className="summary-values-list" style={{ fontSize: '0.8rem' }}>
+                        {displayedValueCounts.map((valueInfo, index) => {
+                          const valueLabel = valueInfo.value === '' ? '(empty)' : valueInfo.value;
+                          const percentageLabel = valueInfo.percentage != null
+                            ? `${valueInfo.percentage.toFixed(1)}%`
+                            : '—';
+                          return (
+                            <li className="summary-value-item" key={`${item.fieldName}-${index}-${valueInfo.value}`} style={{ padding: '0.5rem 0.75rem' }}>
+                              <div className="summary-value-info">
+                                <span className="summary-value-rank">{index + 1}.</span>
+                                <span className="summary-value-text" title={valueLabel} style={{ maxWidth: '200px' }}>
+                                  {valueLabel}
+                                </span>
+                              </div>
+                              <div className="summary-value-stats" style={{ fontSize: '0.75rem' }}>
+                                <span className="summary-value-count">
+                                  {valueInfo.count} occurrence{valueInfo.count === 1 ? '' : 's'}
+                                </span>
+                                <span className="summary-value-percentage">
+                                  {percentageLabel}
+                                </span>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+
+                      {hasAdditionalValues && (
+                        <button
+                          type="button"
+                          className="summary-values-toggle"
+                          onClick={handleToggleShowAll}
+                          style={{ fontSize: '0.75rem', padding: '0.3rem 0.75rem' }}
+                        >
+                          {showAllValuesForRow
+                            ? 'Show top 5'
+                            : `Show all ${valueCounts.length} values`}
+                        </button>
+                      )}
+                    </>
+                  ) : (
+                    <div className="summary-no-values" style={{ fontSize: '0.8rem' }}>
+                      No text values were captured for this field.
+                    </div>
+                  )}
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Reusable Filter Panel Component
+function FilterPanel({ 
+  title, 
+  filters, 
+  setFilters, 
+  availableFields, 
+  prefixToRemove, 
+  activeFilters, 
+  matchingFilesCount, 
+  totalFilesCount,
+  createEmptyFilter,
+  MAX_FILTERS 
+}) {
+  const hasAnyFilterInput = useMemo(
+    () =>
+      filters.some(
+        filter =>
+          filter.field ||
+          filter.value.trim() !== '' ||
+          filter.caseSensitive
+      ),
+    [filters]
+  );
+
+  return (
+    <div className="filter-panel">
+      <div className="filter-panel-header">
+        <h3>{title}</h3>
+        {activeFilters.length > 0 && (
+          <span className="filter-panel-count">
+            {matchingFilesCount} of {totalFilesCount} files
+          </span>
+        )}
+      </div>
+      {filters.map((filter, index) => (
+        <div className="filter-row" key={filter.id}>
+          <div className="filter-group">
+            <label htmlFor={`filter-field-${filter.id}`}>
+              Field{filters.length > 1 ? ` ${index + 1}` : ''}
+            </label>
+            <select
+              id={`filter-field-${filter.id}`}
+              value={filter.field}
+              onChange={(e) => {
+                const value = e.target.value;
+                setFilters(prev =>
+                  prev.map(f => f.id === filter.id ? { ...f, field: value, value: value ? f.value : '', caseSensitive: f.caseSensitive } : f)
+                );
+              }}
+            >
+              <option value="">All fields</option>
+              {availableFields.map(fieldName => (
+                <option key={fieldName} value={fieldName}>
+                  {fieldName}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filter-group filter-value-group">
+            <label htmlFor={`filter-value-${filter.id}`}>Value</label>
+            <div className="filter-value-controls">
+              <input
+                id={`filter-value-${filter.id}`}
+                type="text"
+                placeholder="Enter field value (use * for wildcards: *ABC, ABC*, A*BC)"
+                value={filter.value}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setFilters(prev =>
+                    prev.map(f => f.id === filter.id ? { ...f, value } : f)
+                  );
+                }}
+                disabled={!filter.field}
+              />
+              <label className="filter-case-sensitive">
+                <input
+                  type="checkbox"
+                  checked={filter.caseSensitive}
+                  onChange={(e) => {
+                    const value = e.target.checked;
+                    setFilters(prev =>
+                      prev.map(f => f.id === filter.id ? { ...f, caseSensitive: value } : f)
+                    );
+                  }}
+                />
+                Case sensitive
+              </label>
+            </div>
+          </div>
+
+          {filters.length > 1 && (
+            <button
+              className="filter-remove-btn"
+              onClick={() => {
+                setFilters(prev => {
+                  if (prev.length === 1) {
+                    return prev;
+                  }
+                  return prev.filter(f => f.id !== filter.id);
+                });
+              }}
+              title="Remove this filter"
+              type="button"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      ))}
+
+      <div className="filter-actions">
+        <button
+          className="filter-add-btn"
+          onClick={() => {
+            setFilters(prev => {
+              if (prev.length >= MAX_FILTERS) {
+                return prev;
+              }
+              return [...prev, createEmptyFilter()];
+            });
+          }}
+          disabled={filters.length >= MAX_FILTERS}
+          title={filters.length >= MAX_FILTERS ? `You can add up to ${MAX_FILTERS} filters.` : undefined}
+          type="button"
+        >
+          + Add another filter
+        </button>
+        <button
+          className="filter-clear-btn"
+          onClick={() => setFilters([createEmptyFilter()])}
+          disabled={!hasAnyFilterInput}
+          type="button"
+        >
+          Clear Filters
+        </button>
+      </div>
+
+      {activeFilters.length > 0 && (
+        <div className="filter-summary">
+          {matchingFilesCount === 0 ? (
+            <span>
+              No files match the selected filters:{' '}
+              {activeFilters.map(filter => (
+                <span key={filter.id}>
+                  <code>{removePrefixFromFieldName(filter.field, prefixToRemove)}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                </span>
+              )).reduce((acc, element, idx) => (
+                idx === 0 ? [element] : [...acc, ', ', element]
+              ), [])}
+            </span>
+          ) : (
+            <span>
+              Showing {matchingFilesCount} of {totalFilesCount} files where{' '}
+              {activeFilters.map(filter => (
+                <span key={filter.id}>
+                  <code>{removePrefixFromFieldName(filter.field, prefixToRemove)}</code> = "<span>{filter.trimmedValue}</span>"{filter.caseSensitive ? ' (case sensitive)' : ''}
+                </span>
+              )).reduce((acc, element, idx) => (
+                idx === 0 ? [element] : [...acc, ' and ', element]
+              ), [])}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComparisonView({ comparison, files, filters: filtersProp, setFilters: setFiltersProp, prefixToRemove = '', setPrefixToRemove }) {
   const [activeTab, setActiveTab] = useState('summary');
   const [expandedPaths, setExpandedPaths] = useState(new Set());
@@ -186,6 +550,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
   const [summaryVisibleCount, setSummaryVisibleCount] = useState(100);
   const [expandedSummaryRowKey, setExpandedSummaryRowKey] = useState(null);
   const [showAllSummaryValues, setShowAllSummaryValues] = useState({});
+  
   const createEmptyFilter = () => ({
     id: `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     field: '',
@@ -193,6 +558,16 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     caseSensitive: false,
   });
   const MAX_FILTERS = 5;
+  
+  // Filter comparison state
+  const [filterComparisonMode, setFilterComparisonMode] = useState(false);
+  const [filtersA, setFiltersA] = useState(() => [createEmptyFilter()]);
+  const [filtersB, setFiltersB] = useState(() => [createEmptyFilter()]);
+  const [comparisonViewMode, setComparisonViewMode] = useState('split'); // 'split' or 'diff'
+  const [expandedRowKeyA, setExpandedRowKeyA] = useState(null);
+  const [expandedRowKeyB, setExpandedRowKeyB] = useState(null);
+  const [showAllSummaryValuesA, setShowAllSummaryValuesA] = useState({});
+  const [showAllSummaryValuesB, setShowAllSummaryValuesB] = useState({});
   // Use local state as fallback if props are not provided (for backward compatibility)
   const [localFilters, setLocalFilters] = useState(() => [createEmptyFilter()]);
   // Use filters from props if provided, otherwise fall back to local state
@@ -243,6 +618,87 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     return Array.from(fieldNames).sort((a, b) => a.localeCompare(b));
   }, [files, prefixToRemove]);
 
+  // Helper function to convert wildcard pattern to regex
+  // Supports patterns like: *ABC, ABC*, A*BC, etc.
+  const wildcardToRegex = useCallback((pattern) => {
+    // Escape special regex characters except *
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    // Replace * with .* for regex
+    const regexPattern = escaped.replace(/\*/g, '.*');
+    // Anchor to start and end for full match
+    return new RegExp(`^${regexPattern}$`);
+  }, []);
+
+  // Helper function to check if a value matches a pattern (supports wildcards)
+  const matchesPattern = useCallback((value, pattern, caseSensitive) => {
+    const normalizedValue = caseSensitive ? value : value.toLowerCase();
+    const normalizedPattern = caseSensitive ? pattern : pattern.toLowerCase();
+    
+    // Check if pattern contains wildcard
+    if (normalizedPattern.includes('*')) {
+      const regex = wildcardToRegex(normalizedPattern);
+      return regex.test(normalizedValue);
+    }
+    // Exact match if no wildcard
+    return normalizedValue === normalizedPattern;
+  }, [wildcardToRegex]);
+
+  // Helper function to compute active filters from filter array
+  const computeActiveFilters = useCallback((filterArray) => {
+    return filterArray
+      .map(filter => {
+        const trimmedValue = filter.value.trim();
+        if (!filter.field || trimmedValue === '') {
+          return null;
+        }
+        return {
+          ...filter,
+          trimmedValue,
+        };
+      })
+      .filter(Boolean);
+  }, []);
+
+  // Helper function to filter files based on active filters
+  const filterFilesByActiveFilters = useCallback((fileArray, activeFilterArray) => {
+    if (activeFilterArray.length === 0) {
+      return fileArray;
+    }
+
+    return fileArray.filter(file =>
+      activeFilterArray.every(filterCondition => {
+        return file.fields.some(field => {
+          const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+          if (normalizedFieldName !== filterCondition.field) {
+            return false;
+          }
+
+          // Check valueCounts first (contains all values from all occurrences)
+          if (field.valueCounts && typeof field.valueCounts === 'object') {
+            const valueCountsKeys = Object.keys(field.valueCounts);
+            // Check if any value in valueCounts matches the filter pattern
+            for (const valueKey of valueCountsKeys) {
+              const trimmedValue = valueKey ? valueKey.trim() : '';
+              if (trimmedValue.length > 0) {
+                if (matchesPattern(trimmedValue, filterCondition.trimmedValue, filterCondition.caseSensitive)) {
+                  return true;
+                }
+              }
+            }
+          }
+
+          // Fallback to textContent for backward compatibility (first occurrence)
+          const textValue = field.textContent ? field.textContent.trim() : '';
+          if (textValue.length === 0) {
+            return false;
+          }
+
+          return matchesPattern(textValue, filterCondition.trimmedValue, filterCondition.caseSensitive);
+        });
+      })
+    );
+  }, [prefixToRemove, matchesPattern]);
+
   const filteredFiles = useMemo(() => {
     if (!isFilterActive) {
       return files;
@@ -250,10 +706,6 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
 
     return files.filter(file =>
       activeFilters.every(filterCondition => {
-        const normalizedFilterValue = filterCondition.caseSensitive
-          ? filterCondition.trimmedValue
-          : filterCondition.trimmedValue.toLowerCase();
-
         return file.fields.some(field => {
           // Normalize field name for comparison
           const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
@@ -261,17 +713,31 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
             return false;
           }
 
+          // Check valueCounts first (contains all values from all occurrences)
+          if (field.valueCounts && typeof field.valueCounts === 'object') {
+            const valueCountsKeys = Object.keys(field.valueCounts);
+            // Check if any value in valueCounts matches the filter pattern
+            for (const valueKey of valueCountsKeys) {
+              const trimmedValue = valueKey ? valueKey.trim() : '';
+              if (trimmedValue.length > 0) {
+                if (matchesPattern(trimmedValue, filterCondition.trimmedValue, filterCondition.caseSensitive)) {
+                  return true;
+                }
+              }
+            }
+          }
+
+          // Fallback to textContent for backward compatibility (first occurrence)
           const textValue = field.textContent ? field.textContent.trim() : '';
           if (textValue.length === 0) {
             return false;
           }
 
-          const candidateValue = filterCondition.caseSensitive ? textValue : textValue.toLowerCase();
-          return candidateValue === normalizedFilterValue;
+          return matchesPattern(textValue, filterCondition.trimmedValue, filterCondition.caseSensitive);
         });
       })
     );
-  }, [files, isFilterActive, activeFilters, prefixToRemove]);
+  }, [files, isFilterActive, activeFilters, prefixToRemove, matchesPattern]);
 
   const comparisonFiles = filteredFiles;
 
@@ -281,6 +747,241 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
     }
     return compareFields(comparisonFiles, prefixToRemove);
   }, [comparison, comparisonFiles, isFilterActive, prefixToRemove]);
+
+  // Filter comparison computations
+  const activeFiltersA = useMemo(() => computeActiveFilters(filtersA), [filtersA, computeActiveFilters]);
+  const activeFiltersB = useMemo(() => computeActiveFilters(filtersB), [filtersB, computeActiveFilters]);
+  const isFilterActiveA = activeFiltersA.length > 0;
+  const isFilterActiveB = activeFiltersB.length > 0;
+
+  const filteredFilesA = useMemo(() => {
+    if (!filterComparisonMode) return [];
+    return filterFilesByActiveFilters(files, activeFiltersA);
+  }, [filterComparisonMode, files, activeFiltersA, filterFilesByActiveFilters]);
+
+  const filteredFilesB = useMemo(() => {
+    if (!filterComparisonMode) return [];
+    return filterFilesByActiveFilters(files, activeFiltersB);
+  }, [filterComparisonMode, files, activeFiltersB, filterFilesByActiveFilters]);
+
+  const comparisonA = useMemo(() => {
+    if (!filterComparisonMode || filteredFilesA.length === 0) {
+      return null;
+    }
+    return compareFields(filteredFilesA, prefixToRemove);
+  }, [filterComparisonMode, filteredFilesA, prefixToRemove]);
+
+  const comparisonB = useMemo(() => {
+    if (!filterComparisonMode || filteredFilesB.length === 0) {
+      return null;
+    }
+    return compareFields(filteredFilesB, prefixToRemove);
+  }, [filterComparisonMode, filteredFilesB, prefixToRemove]);
+
+  const aggregationA = useMemo(() => {
+    if (!comparisonA || !comparisonA.aggregation) {
+      return {
+        filesCount: filteredFilesA.length,
+        totalFieldInstances: 0,
+        averageFieldsPerFile: 0,
+        uniqueFieldNames: 0,
+        uniqueFieldPaths: 0,
+        fieldNameSummary: [],
+        fieldPathSummary: [],
+      };
+    }
+    return comparisonA.aggregation;
+  }, [comparisonA, filteredFilesA.length]);
+
+  const aggregationB = useMemo(() => {
+    if (!comparisonB || !comparisonB.aggregation) {
+      return {
+        filesCount: filteredFilesB.length,
+        totalFieldInstances: 0,
+        averageFieldsPerFile: 0,
+        uniqueFieldNames: 0,
+        uniqueFieldPaths: 0,
+        fieldNameSummary: [],
+        fieldPathSummary: [],
+      };
+    }
+    return comparisonB.aggregation;
+  }, [comparisonB, filteredFilesB.length]);
+
+  // Helper function to compute summary rows from aggregation (similar to existing logic)
+  const computeSummaryRows = useCallback((agg, mode) => {
+    if (mode === 'flat') {
+      return (agg.fieldNameSummary || []).map(item => ({
+        ...item,
+        uniqueKey: item.fieldName,
+        depth: item.depths && typeof item.depths.min === 'number' ? item.depths.min : 0,
+        parentPath: null,
+        path: item.samplePaths && item.samplePaths.length > 0 ? item.samplePaths[0] : item.fieldName,
+        pathSegments: item.samplePaths && item.samplePaths.length > 0
+          ? item.samplePaths[0].split(' > ')
+          : [item.fieldName],
+      }));
+    } else {
+      // hierarchical mode
+      const pathSummary = agg.fieldPathSummary || [];
+      if (!pathSummary || pathSummary.length === 0) {
+        return [];
+      }
+
+      const totalFiles = agg.filesCount || 0;
+      const nodeMap = new Map();
+      const rootNodes = [];
+
+      pathSummary.forEach(item => {
+        const depthFromSegments = item.pathSegments && item.pathSegments.length > 0
+          ? item.pathSegments.length - 1
+          : (typeof item.depth === 'number' ? item.depth : 0);
+
+        const node = {
+          uniqueKey: item.path,
+          fieldName: item.fieldName,
+          depth: typeof item.depth === 'number' ? item.depth : depthFromSegments,
+          parentPath: item.parentPath || '',
+          filesWithField: item.filesWithPath,
+          filesMissingField: typeof item.filesMissingPath === 'number'
+            ? item.filesMissingPath
+            : Math.max(totalFiles - (item.filesWithPath || 0), 0),
+          presencePercent: item.presencePercent,
+          totalOccurrences: item.totalOccurrences,
+          averageOccurrencesPerFile: item.averageOccurrencesPerFile,
+          samplePaths: [item.path],
+          path: item.path,
+          pathSegments: item.pathSegments || item.path.split(' > '),
+          valueCounts: item.valueCounts || [],
+          uniqueValuesCount: item.uniqueValuesCount ?? (item.valueCounts ? item.valueCounts.length : 0),
+          hasChildren: !!item.hasChildren,
+          orderIndex: item.orderIndex,
+          children: [],
+        };
+
+        nodeMap.set(item.path, node);
+      });
+
+      nodeMap.forEach(node => {
+        if (node.parentPath && nodeMap.has(node.parentPath)) {
+          const parent = nodeMap.get(node.parentPath);
+          parent.children.push(node);
+          parent.hasChildren = true;
+        } else {
+          rootNodes.push(node);
+        }
+      });
+
+      const sortNodes = nodes => {
+        nodes.sort((a, b) => {
+          const orderA = a.orderIndex !== undefined ? a.orderIndex : 999999;
+          const orderB = b.orderIndex !== undefined ? b.orderIndex : 999999;
+          if (orderA !== orderB) {
+            return orderA - orderB;
+          }
+          return a.fieldName.localeCompare(b.fieldName);
+        });
+        nodes.forEach(node => {
+          if (node.children.length > 0) {
+            sortNodes(node.children);
+          }
+        });
+      };
+
+      sortNodes(rootNodes);
+
+      const flattened = [];
+      const traverse = nodes => {
+        nodes.forEach(node => {
+          const { children, ...rest } = node;
+          const flattenedNode = {
+            ...rest,
+            hasChildren: rest.hasChildren || (children && children.length > 0),
+          };
+          flattened.push(flattenedNode);
+          if (children.length > 0) {
+            traverse(children);
+          }
+        });
+      };
+
+      traverse(rootNodes);
+      return flattened;
+    }
+  }, []);
+
+  // Compute summary rows for both aggregations
+  const summaryRowsA = useMemo(() => {
+    if (!filterComparisonMode) return [];
+    return computeSummaryRows(aggregationA, summaryMode);
+  }, [filterComparisonMode, aggregationA, summaryMode, computeSummaryRows]);
+
+  const summaryRowsB = useMemo(() => {
+    if (!filterComparisonMode) return [];
+    return computeSummaryRows(aggregationB, summaryMode);
+  }, [filterComparisonMode, aggregationB, summaryMode, computeSummaryRows]);
+
+  // Compute differences between the two summary sets
+  const summaryDiff = useMemo(() => {
+    if (!filterComparisonMode || comparisonViewMode !== 'diff') {
+      return null;
+    }
+
+    const diffMap = new Map();
+    
+    // Add all fields from A
+    summaryRowsA.forEach(row => {
+      const key = summaryMode === 'hierarchical' ? row.path : row.fieldName;
+      diffMap.set(key, {
+        ...row,
+        source: 'A',
+        diffType: 'onlyA',
+      });
+    });
+
+    // Process fields from B
+    summaryRowsB.forEach(row => {
+      const key = summaryMode === 'hierarchical' ? row.path : row.fieldName;
+      const existing = diffMap.get(key);
+      
+      if (existing) {
+        // Field exists in both - check for differences
+        const hasDifference = 
+          existing.filesWithField !== row.filesWithField ||
+          existing.totalOccurrences !== row.totalOccurrences ||
+          existing.presencePercent !== row.presencePercent ||
+          existing.uniqueValuesCount !== row.uniqueValuesCount;
+        
+        if (hasDifference) {
+          diffMap.set(key, {
+            ...row,
+            source: 'both',
+            diffType: 'different',
+            valueA: existing,
+            valueB: row,
+          });
+        } else {
+          diffMap.set(key, {
+            ...row,
+            source: 'both',
+            diffType: 'same',
+          });
+        }
+      } else {
+        // Field only in B
+        diffMap.set(key, {
+          ...row,
+          source: 'B',
+          diffType: 'onlyB',
+        });
+      }
+    });
+
+    return Array.from(diffMap.values()).filter(item => {
+      // In diff view, only show fields that differ or are unique
+      return item.diffType !== 'same';
+    });
+  }, [filterComparisonMode, comparisonViewMode, summaryMode, summaryRowsA, summaryRowsB]);
 
   const aggregation = useMemo(() => {
     if (!activeComparison || !activeComparison.aggregation) {
@@ -663,7 +1364,50 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
       </div>
 
       <div className="comparison-filter-bar">
-        {filters.map((filter, index) => (
+        <div className="filter-comparison-toggle" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <button
+            className={`export-btn ${filterComparisonMode ? '' : 'secondary'}`}
+            onClick={() => {
+              setFilterComparisonMode(!filterComparisonMode);
+              if (!filterComparisonMode) {
+                // Initialize filter sets when enabling comparison mode
+                setFiltersA([createEmptyFilter()]);
+                setFiltersB([createEmptyFilter()]);
+              }
+            }}
+            style={{
+              backgroundColor: filterComparisonMode ? 'var(--primary-color)' : 'var(--secondary-color)',
+            }}
+          >
+            {filterComparisonMode ? 'Exit Compare Filters' : 'Compare Filters'}
+          </button>
+          {filterComparisonMode && (
+            <div className="comparison-view-toggle" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>View:</span>
+              <div className="summary-view-toggle" role="group" aria-label="Comparison view mode">
+                <button
+                  type="button"
+                  className={`summary-view-toggle__btn ${comparisonViewMode === 'split' ? 'active' : ''}`}
+                  onClick={() => setComparisonViewMode('split')}
+                >
+                  Split View
+                </button>
+                <button
+                  type="button"
+                  className={`summary-view-toggle__btn ${comparisonViewMode === 'diff' ? 'active' : ''}`}
+                  onClick={() => setComparisonViewMode('diff')}
+                >
+                  Diff View
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {!filterComparisonMode ? (
+          // Single filter panel (existing behavior)
+          <>
+            {filters.map((filter, index) => (
           <div className="filter-row" key={filter.id}>
             <div className="filter-group">
               <label htmlFor={`comparison-filter-field-${filter.id}`}>
@@ -694,7 +1438,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                 <input
                   id={`comparison-filter-value-${filter.id}`}
                   type="text"
-                  placeholder="Enter field value"
+                  placeholder="Enter field value (use * for wildcards: *ABC, ABC*, A*BC)"
                   value={filter.value}
                   onChange={(e) => {
                     const value = e.target.value;
@@ -765,29 +1509,6 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
           >
             Clear Filters
           </button>
-          <div className="filter-prefix-input" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <label htmlFor="prefix-to-remove" style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>
-              Remove Prefix:
-            </label>
-            <input
-              id="prefix-to-remove"
-              type="text"
-              placeholder="e.g., ns0:"
-              value={prefixToRemove}
-              onChange={(e) => {
-                if (setPrefixToRemove) {
-                  setPrefixToRemove(e.target.value);
-                }
-              }}
-              style={{
-                padding: '0.5rem',
-                border: '1px solid var(--border-color)',
-                borderRadius: '0.5rem',
-                fontSize: '0.875rem',
-                width: '120px',
-              }}
-            />
-          </div>
         </div>
 
         {isFilterActive && (
@@ -823,6 +1544,61 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
             Need at least two matching files for a full comparison. Displaying available data for the {comparisonFiles.length === 1 ? 'single matching file.' : 'selected files.'}
           </div>
         )}
+          </>
+        ) : (
+          // Dual filter panels for comparison mode
+          <div className="filter-comparison-panels" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
+            <FilterPanel
+              title="Filter Set A"
+              filters={filtersA}
+              setFilters={setFiltersA}
+              availableFields={availableFields}
+              prefixToRemove={prefixToRemove}
+              activeFilters={activeFiltersA}
+              matchingFilesCount={filteredFilesA.length}
+              totalFilesCount={files.length}
+              createEmptyFilter={createEmptyFilter}
+              MAX_FILTERS={MAX_FILTERS}
+            />
+            <FilterPanel
+              title="Filter Set B"
+              filters={filtersB}
+              setFilters={setFiltersB}
+              availableFields={availableFields}
+              prefixToRemove={prefixToRemove}
+              activeFilters={activeFiltersB}
+              matchingFilesCount={filteredFilesB.length}
+              totalFilesCount={files.length}
+              createEmptyFilter={createEmptyFilter}
+              MAX_FILTERS={MAX_FILTERS}
+            />
+          </div>
+        )}
+
+        {/* Prefix input - shared for both modes */}
+        <div className="filter-prefix-input" style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <label htmlFor="prefix-to-remove" style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>
+            Remove Prefix:
+          </label>
+          <input
+            id="prefix-to-remove"
+            type="text"
+            placeholder="e.g., ns0:"
+            value={prefixToRemove}
+            onChange={(e) => {
+              if (setPrefixToRemove) {
+                setPrefixToRemove(e.target.value);
+              }
+            }}
+            style={{
+              padding: '0.5rem',
+              border: '1px solid var(--border-color)',
+              borderRadius: '0.5rem',
+              fontSize: '0.875rem',
+              width: '120px',
+            }}
+          />
+        </div>
       </div>
 
       <div className="tabs" style={{ borderBottom: '1px solid var(--border-color)', padding: '0 1rem', margin: 0 }}>
@@ -857,7 +1633,139 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
       </div>
 
       <div style={{ padding: '1.5rem' }}>
-        {activeTab === 'summary' && (
+        {activeTab === 'summary' && filterComparisonMode ? (
+          // Filter Comparison Views (Split or Diff)
+          <div className="summary-view">
+            <div className="summary-header">
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                <div>
+                  <h3>Filter Comparison Summary</h3>
+                  <p style={{ margin: '0.25rem 0 0' }}>
+                    {comparisonViewMode === 'split' 
+                      ? 'Side-by-side comparison of Filter Set A and Filter Set B'
+                      : 'Differences between Filter Set A and Filter Set B'}
+                  </p>
+                </div>
+                <div className="summary-view-toggle" role="group" aria-label="Summary view mode">
+                  <button
+                    type="button"
+                    className={`summary-view-toggle__btn ${summaryMode === 'hierarchical' ? 'active' : ''}`}
+                    onClick={() => setSummaryMode('hierarchical')}
+                  >
+                    Hierarchy
+                  </button>
+                  <button
+                    type="button"
+                    className={`summary-view-toggle__btn ${summaryMode === 'flat' ? 'active' : ''}`}
+                    onClick={() => setSummaryMode('flat')}
+                  >
+                    Flat
+                  </button>
+                </div>
+              </div>
+            </div>
+            
+            {comparisonViewMode === 'split' ? (
+              // Split View - Two columns side by side with full hierarchical structure
+              <div className="split-view-container" style={{ 
+                display: 'grid', 
+                gridTemplateColumns: '1fr 1fr', 
+                gap: '1.5rem',
+                alignItems: 'start'
+              }}>
+                <SummaryTablePanel
+                  title="Filter Set A"
+                  summaryRows={summaryRowsA}
+                  aggregation={aggregationA}
+                  summaryMode={summaryMode}
+                  prefixToRemove={prefixToRemove}
+                  expandedRowKey={expandedRowKeyA}
+                  onRowClick={setExpandedRowKeyA}
+                  showAllValues={showAllSummaryValuesA}
+                  onToggleShowAll={(rowKey) => {
+                    setShowAllSummaryValuesA(prev => ({
+                      ...prev,
+                      [rowKey]: !prev[rowKey],
+                    }));
+                  }}
+                  hideDepth={true}
+                />
+                
+                <SummaryTablePanel
+                  title="Filter Set B"
+                  summaryRows={summaryRowsB}
+                  aggregation={aggregationB}
+                  summaryMode={summaryMode}
+                  prefixToRemove={prefixToRemove}
+                  expandedRowKey={expandedRowKeyB}
+                  onRowClick={setExpandedRowKeyB}
+                  showAllValues={showAllSummaryValuesB}
+                  onToggleShowAll={(rowKey) => {
+                    setShowAllSummaryValuesB(prev => ({
+                      ...prev,
+                      [rowKey]: !prev[rowKey],
+                    }));
+                  }}
+                  hideDepth={true}
+                />
+              </div>
+            ) : (
+              // Diff View - Single table with only unique fields highlighted
+              <div>
+                <div className="summary-cards" style={{ marginBottom: '1rem' }}>
+                  <div className="summary-card">
+                    <div className="card-label">Fields Only in Set A</div>
+                    <div className="card-value">
+                      {summaryDiff ? summaryDiff.filter(d => d.diffType === 'onlyA').length : 0}
+                    </div>
+                  </div>
+                  <div className="summary-card">
+                    <div className="card-label">Fields Only in Set B</div>
+                    <div className="card-value">
+                      {summaryDiff ? summaryDiff.filter(d => d.diffType === 'onlyB').length : 0}
+                    </div>
+                  </div>
+                </div>
+                <div className="summary-table">
+                  <div className="summary-table-header">
+                    <div>Field Name</div>
+                    <div>Difference</div>
+                    <div>Set A</div>
+                    <div>Set B</div>
+                  </div>
+                  {summaryDiff && summaryDiff.slice(0, 100).map(item => {
+                    const key = summaryMode === 'hierarchical' ? item.path : item.fieldName;
+                    // Only highlight fields that are ONLY in A or ONLY in B
+                    const bgColor = 
+                      item.diffType === 'onlyA' ? 'rgba(16, 185, 129, 0.1)' :
+                      item.diffType === 'onlyB' ? 'rgba(239, 68, 68, 0.1)' :
+                      undefined; // Neutral/uncolored for fields that exist in both
+                    return (
+                      <div 
+                        key={key} 
+                        className="summary-table-row"
+                        style={bgColor ? { backgroundColor: bgColor } : {}}
+                      >
+                        <div>{removePrefixFromFieldName(item.fieldName, prefixToRemove)}</div>
+                        <div>
+                          {item.diffType === 'onlyA' && <span style={{ color: 'var(--secondary-color)' }}>Only in A</span>}
+                          {item.diffType === 'onlyB' && <span style={{ color: 'var(--danger-color)' }}>Only in B</span>}
+                          {item.diffType === 'different' && <span>Different</span>}
+                        </div>
+                        <div>
+                          {item.diffType === 'onlyB' ? '—' : `${item.valueA?.filesWithField || item.filesWithField}/${aggregationA.filesCount} files, ${item.valueA?.totalOccurrences || item.totalOccurrences} occ.`}
+                        </div>
+                        <div>
+                          {item.diffType === 'onlyA' ? '—' : `${item.filesWithField}/${aggregationB.filesCount} files, ${item.totalOccurrences} occ.`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : activeTab === 'summary' && (
           <div className="summary-view">
             <div className="summary-header">
               <h3>Comparison Summary</h3>

@@ -44,6 +44,22 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                     return false;
                 }
 
+                // Check valueCounts first (contains all values from all occurrences)
+                if (field.valueCounts && typeof field.valueCounts === 'object') {
+                    const valueCountsKeys = Object.keys(field.valueCounts);
+                    // Check if any value in valueCounts matches the filter value
+                    for (const valueKey of valueCountsKeys) {
+                        const trimmedValueKey = valueKey ? valueKey.trim() : '';
+                        if (trimmedValueKey.length > 0) {
+                            const candidateValue = sourceFieldCaseSensitive ? trimmedValueKey : trimmedValueKey.toLowerCase();
+                            if (candidateValue === normalizedFilterValue) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // Fallback to textContent for backward compatibility (first occurrence)
                 const textValue = field.textContent ? field.textContent.trim() : '';
                 if (textValue.length === 0) {
                     return false;
