@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { fieldsToCSV, removePrefixFromFieldName, removePrefixFromPath } from '../utils/xmlParser';
+import { fieldsToCSV, removePrefixFromFieldName } from '../utils/xmlParser';
 
 // Tooltip component
 const Tooltip = ({ text, children }) => {
@@ -191,6 +191,17 @@ function FieldsViewer({ file, prefixToRemove = '' }) {
       }
 
       // Format the XML with indentation
+      // Helper function to escape XML text content
+      const escapeXML = (text) => {
+        if (!text) return '';
+        return String(text)
+          .replace(/&(?!amp;|lt;|gt;|quot;|apos;)/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+      };
+
       const formatNode = (node, indent = 0) => {
         const indentStr = '  '.repeat(indent);
         let result = '';
@@ -202,7 +213,7 @@ function FieldsViewer({ file, prefixToRemove = '' }) {
           // Add attributes
           if (node.attributes && node.attributes.length > 0) {
             Array.from(node.attributes).forEach(attr => {
-              tag += ` ${attr.name}="${attr.value.replace(/"/g, '&quot;')}"`;
+              tag += ` ${attr.name}="${escapeXML(attr.value)}"`;
             });
           }
           
@@ -225,14 +236,14 @@ function FieldsViewer({ file, prefixToRemove = '' }) {
               if (child.nodeType === Node.ELEMENT_NODE) {
                 childrenResult += formatNode(child, indent + 1);
               } else if (child.nodeType === Node.TEXT_NODE && child.textContent.trim()) {
-                childrenResult += `${indentStr}  ${child.textContent.trim()}\n`;
+                childrenResult += `${indentStr}  ${escapeXML(child.textContent.trim())}\n`;
               }
             });
             
             result = tag + childrenResult + `${indentStr}</${node.nodeName}>\n`;
           } else if (directTextNodes.length > 0) {
             // Only text content, no element children
-            result = tag + `>${directTextNodes.join(' ')}</${node.nodeName}>\n`;
+            result = tag + `>${escapeXML(directTextNodes.join(' '))}</${node.nodeName}>\n`;
           } else {
             // Empty element
             result = tag + '/>\n';

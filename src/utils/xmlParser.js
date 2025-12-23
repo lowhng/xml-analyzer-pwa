@@ -1057,7 +1057,20 @@ export function getFieldValuesFromFiles(files, fieldName, parentPath, prefixToRe
       // Match by field name and parent path
       if (normalizedFieldNameFromFile === normalizedFieldName && 
           normalizedParentPathFromFile === normalizedParentPath) {
-        // Collect text content (trimmed, non-empty)
+        
+        // First, check valueCounts (contains all values from all occurrences)
+        if (field.valueCounts && typeof field.valueCounts === 'object') {
+          const valueCountsKeys = Object.keys(field.valueCounts);
+          valueCountsKeys.forEach(valueKey => {
+            const trimmedValue = valueKey ? valueKey.trim() : '';
+            if (trimmedValue.length > 0) {
+              valueSet.add(trimmedValue);
+            }
+          });
+        }
+        
+        // Also collect text content (trimmed, non-empty) as fallback
+        // This ensures backward compatibility and handles cases where valueCounts might not exist
         const textValue = field.textContent ? field.textContent.trim() : '';
         if (textValue.length > 0) {
           valueSet.add(textValue);

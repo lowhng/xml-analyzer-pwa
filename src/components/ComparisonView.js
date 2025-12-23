@@ -568,6 +568,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
   const [expandedRowKeyB, setExpandedRowKeyB] = useState(null);
   const [showAllSummaryValuesA, setShowAllSummaryValuesA] = useState({});
   const [showAllSummaryValuesB, setShowAllSummaryValuesB] = useState({});
+  const [diffVisibleCount, setDiffVisibleCount] = useState(100);
   // Use local state as fallback if props are not provided (for backward compatibility)
   const [localFilters, setLocalFilters] = useState(() => [createEmptyFilter()]);
   // Use filters from props if provided, otherwise fall back to local state
@@ -751,8 +752,6 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
   // Filter comparison computations
   const activeFiltersA = useMemo(() => computeActiveFilters(filtersA), [filtersA, computeActiveFilters]);
   const activeFiltersB = useMemo(() => computeActiveFilters(filtersB), [filtersB, computeActiveFilters]);
-  const isFilterActiveA = activeFiltersA.length > 0;
-  const isFilterActiveB = activeFiltersB.length > 0;
 
   const filteredFilesA = useMemo(() => {
     if (!filterComparisonMode) return [];
@@ -1176,7 +1175,13 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
   useEffect(() => {
     setExpandedSummaryRowKey(null);
     setShowAllSummaryValues({});
+    setDiffVisibleCount(100); // Reset diff visible count when summary mode changes
   }, [summaryMode]);
+
+  useEffect(() => {
+    // Reset diff visible count when switching views or when summaryDiff changes
+    setDiffVisibleCount(100);
+  }, [comparisonViewMode, summaryDiff]);
 
   const handleSummaryRowClick = (rowKey) => {
     setExpandedSummaryRowKey(prev => (prev === rowKey ? null : rowKey));
@@ -1712,7 +1717,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
             ) : (
               // Diff View - Single table with only unique fields highlighted
               <div>
-                <div className="summary-cards" style={{ marginBottom: '1rem' }}>
+                <div className="summary-cards" style={{ marginBottom: '1rem', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
                   <div className="summary-card">
                     <div className="card-label">Fields Only in Set A</div>
                     <div className="card-value">
@@ -1725,6 +1730,15 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                       {summaryDiff ? summaryDiff.filter(d => d.diffType === 'onlyB').length : 0}
                     </div>
                   </div>
+                  <div className="summary-card">
+                    <div className="card-label">Total Differences</div>
+                    <div className="card-value">
+                      {summaryDiff ? summaryDiff.length : 0}
+                    </div>
+                  </div>
+                </div>
+                <div className="summary-table-info" style={{ marginBottom: '1rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                  Showing {summaryDiff ? Math.min(diffVisibleCount, summaryDiff.length) : 0} of {summaryDiff ? summaryDiff.length : 0} differences
                 </div>
                 <div className="summary-table">
                   <div className="summary-table-header">
@@ -1733,7 +1747,7 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                     <div>Set A</div>
                     <div>Set B</div>
                   </div>
-                  {summaryDiff && summaryDiff.slice(0, 100).map(item => {
+                  {summaryDiff && summaryDiff.slice(0, diffVisibleCount).map(item => {
                     const key = summaryMode === 'hierarchical' ? item.path : item.fieldName;
                     // Only highlight fields that are ONLY in A or ONLY in B
                     const bgColor = 
@@ -1762,6 +1776,17 @@ function ComparisonView({ comparison, files, filters: filtersProp, setFilters: s
                     );
                   })}
                 </div>
+                {summaryDiff && summaryDiff.length > diffVisibleCount && (
+                  <div className="summary-show-more" style={{ marginTop: '1rem' }}>
+                    <button
+                      type="button"
+                      className="summary-show-more-btn"
+                      onClick={() => setDiffVisibleCount(prev => prev + 100)}
+                    >
+                      Show 100 more ({summaryDiff.length - diffVisibleCount} remaining)
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

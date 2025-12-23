@@ -239,6 +239,7 @@ function App() {
                   files={files}
                   comparison={comparison}
                   prefixToRemove={prefixToRemove}
+                  filters={comparisonFilters}
                 />
               )}
             </>

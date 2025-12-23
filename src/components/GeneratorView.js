@@ -1,7 +1,141 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath, getFieldValuesFromFiles } from '../utils/xmlParser';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { mergeFieldsFromFiles, removePrefixFromFieldName, removePrefixFromPath, getFieldValuesFromFiles, compareFields } from '../utils/xmlParser';
 
-function GeneratorView({ files, comparison, prefixToRemove = '' }) {
+// Component for field value input with custom dropdown
+const FieldValueInput = ({ field, availableValues, allValuesCount, valuesCount, onFieldChange, openDropdownFieldId, setOpenDropdownFieldId }) => {
+    const isDropdownOpen = openDropdownFieldId === field.uiId;
+    const dropdownRef = useRef(null);
+    const buttonRef = useRef(null);
+    
+    // Close dropdown when clicking outside
+    useEffect(() => {
+        if (!isDropdownOpen) return;
+        
+        const handleClickOutside = (event) => {
+            if (dropdownRef.current && 
+                buttonRef.current &&
+                !dropdownRef.current.contains(event.target) &&
+                !buttonRef.current.contains(event.target)) {
+                setOpenDropdownFieldId(null);
+            }
+        };
+        
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [isDropdownOpen, setOpenDropdownFieldId]);
+    
+    const handleValueButtonClick = (e) => {
+        e.stopPropagation();
+        if (valuesCount > 0 && field.enabled) {
+            setOpenDropdownFieldId(isDropdownOpen ? null : field.uiId);
+        }
+    };
+    
+    const handleValueSelect = (value) => {
+        onFieldChange(field.uiId, { customValue: value });
+        setOpenDropdownFieldId(null);
+    };
+    
+    return (
+        <>
+            <input
+                type="text"
+                className="field-value-input"
+                value={field.customValue || ''}
+                onChange={(e) => onFieldChange(field.uiId, { customValue: e.target.value })}
+                placeholder="Value"
+                disabled={!field.enabled}
+                onClick={(e) => e.stopPropagation()} // Prevent selecting row when clicking input
+                style={{
+                    padding: '0.5rem',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '0.25rem',
+                    backgroundColor: field.enabled ? 'var(--bg-color)' : 'var(--surface-color)',
+                    color: 'var(--text-primary)',
+                    fontSize: '0.875rem',
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    gridColumn: '5',
+                    justifySelf: 'end'
+                }}
+            />
+            <div style={{ gridColumn: '6', position: 'relative', width: '100%', display: 'flex', justifyContent: 'flex-start' }}>
+                {allValuesCount > 0 && (
+                    <>
+                        <button
+                            ref={buttonRef}
+                            type="button"
+                            className="field-value-count"
+                            onClick={handleValueButtonClick}
+                            disabled={!field.enabled || valuesCount === 0}
+                            style={{
+                                cursor: (field.enabled && valuesCount > 0) ? 'pointer' : 'default',
+                                background: (field.enabled && valuesCount > 0) ? '#10b981' : '#9ca3af', // Green pill background
+                                border: 'none',
+                                padding: '0.25rem 0.75rem',
+                                margin: 0,
+                                fontSize: '0.875rem',
+                                color: '#ffffff', // White text on green background
+                                whiteSpace: 'nowrap',
+                                textDecoration: 'none',
+                                borderRadius: '9999px', // Pill shape (fully rounded)
+                                fontWeight: '500'
+                            }}
+                        >
+                            {valuesCount} value{valuesCount === 1 ? '' : 's'}
+                        </button>
+                        {isDropdownOpen && valuesCount > 0 && (
+                            <div
+                                ref={dropdownRef}
+                                style={{
+                                    position: 'absolute',
+                                    top: '100%',
+                                    right: 0,
+                                    marginTop: '0.25rem',
+                                    backgroundColor: 'var(--bg-color)',
+                                    border: '1px solid var(--border-color)',
+                                    borderRadius: '0.5rem',
+                                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                                    zIndex: 1000,
+                                    maxHeight: '200px',
+                                    overflowY: 'auto',
+                                    minWidth: '200px',
+                                    maxWidth: '400px'
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                {availableValues.map((value, idx) => (
+                                    <div
+                                        key={idx}
+                                        onClick={() => handleValueSelect(value)}
+                                        style={{
+                                            padding: '0.5rem 0.75rem',
+                                            cursor: 'pointer',
+                                            borderBottom: idx < availableValues.length - 1 ? '1px solid var(--border-color)' : 'none',
+                                            color: 'var(--text-primary)',
+                                            fontSize: '0.875rem',
+                                            transition: 'background-color 0.15s'
+                                        }}
+                                        onMouseEnter={(e) => {
+                                            e.target.style.backgroundColor = 'var(--surface-color)';
+                                        }}
+                                        onMouseLeave={(e) => {
+                                            e.target.style.backgroundColor = 'transparent';
+                                        }}
+                                    >
+                                        {value}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </>
+                )}
+            </div>
+        </>
+    );
+};
+
+function GeneratorView({ files, comparison, prefixToRemove = '', filters = [] }) {
     const [sourceType, setSourceType] = useState('merged'); // 'merged', 'common', or 'field-based'
     const [fields, setFields] = useState([]);
     const [generatedXML, setGeneratedXML] = useState('');
@@ -11,10 +145,102 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
     const [sourceFieldValue, setSourceFieldValue] = useState('');
     const [sourceFieldCaseSensitive, setSourceFieldCaseSensitive] = useState(false);
 
-    // Compute available fields from all files (same logic as ComparisonView)
+    // Filtering logic (same as ComparisonView)
+    const wildcardToRegex = useCallback((pattern) => {
+        // Escape special regex characters except *
+        const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+        // Replace * with .* for regex
+        const regexPattern = escaped.replace(/\*/g, '.*');
+        // Anchor to start and end for full match
+        return new RegExp(`^${regexPattern}$`);
+    }, []);
+
+    const matchesPattern = useCallback((value, pattern, caseSensitive) => {
+        const normalizedValue = caseSensitive ? value : value.toLowerCase();
+        const normalizedPattern = caseSensitive ? pattern : pattern.toLowerCase();
+        
+        // Check if pattern contains wildcard
+        if (normalizedPattern.includes('*')) {
+            const regex = wildcardToRegex(normalizedPattern);
+            return regex.test(normalizedValue);
+        }
+        // Exact match if no wildcard
+        return normalizedValue === normalizedPattern;
+    }, [wildcardToRegex]);
+
+    // Compute active filters from filter array
+    const computeActiveFilters = useCallback((filterArray) => {
+        return filterArray
+            .map(filter => {
+                const trimmedValue = filter.value.trim();
+                if (!filter.field || trimmedValue === '') {
+                    return null;
+                }
+                return {
+                    field: filter.field,
+                    value: trimmedValue,
+                    trimmedValue: trimmedValue,
+                    caseSensitive: filter.caseSensitive || false
+                };
+            })
+            .filter(f => f !== null);
+    }, []);
+
+    // Filter files based on active filters
+    const filterFilesByActiveFilters = useCallback((fileArray, activeFilterArray) => {
+        if (activeFilterArray.length === 0) {
+            return fileArray;
+        }
+
+        return fileArray.filter(file =>
+            activeFilterArray.every(filterCondition => {
+                return file.fields.some(field => {
+                    const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+                    if (normalizedFieldName !== filterCondition.field) {
+                        return false;
+                    }
+
+                    // Check valueCounts first (contains all values from all occurrences)
+                    if (field.valueCounts && typeof field.valueCounts === 'object') {
+                        const valueCountsKeys = Object.keys(field.valueCounts);
+                        // Check if any value in valueCounts matches the filter pattern
+                        for (const valueKey of valueCountsKeys) {
+                            const trimmedValue = valueKey ? valueKey.trim() : '';
+                            if (trimmedValue.length > 0) {
+                                if (matchesPattern(trimmedValue, filterCondition.trimmedValue, filterCondition.caseSensitive)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Fallback to textContent for backward compatibility (first occurrence)
+                    const textValue = field.textContent ? field.textContent.trim() : '';
+                    if (textValue.length === 0) {
+                        return false;
+                    }
+
+                    return matchesPattern(textValue, filterCondition.trimmedValue, filterCondition.caseSensitive);
+                });
+            })
+        );
+    }, [prefixToRemove, matchesPattern]);
+
+    // Compute filtered files based on filters
+    const activeFilters = useMemo(() => computeActiveFilters(filters), [filters, computeActiveFilters]);
+    const isFilterActive = activeFilters.length > 0;
+
+    const filteredFiles = useMemo(() => {
+        if (!isFilterActive) {
+            return files;
+        }
+        return filterFilesByActiveFilters(files, activeFilters);
+    }, [files, isFilterActive, activeFilters, filterFilesByActiveFilters]);
+
+    // Compute available fields from filtered files (same logic as ComparisonView)
     const availableFields = useMemo(() => {
         const fieldNames = new Set();
-        files.forEach(file => {
+        filteredFiles.forEach(file => {
             file.fields.forEach(field => {
                 const textValue = field.textContent ? field.textContent.trim() : '';
                 if (textValue.length > 0) {
@@ -24,9 +250,9 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             });
         });
         return Array.from(fieldNames).sort((a, b) => a.localeCompare(b));
-    }, [files, prefixToRemove]);
+    }, [filteredFiles, prefixToRemove]);
 
-    // Filter files based on field-based selection
+    // Filter files based on field-based selection (applied on top of comparison filters)
     const filteredSourceFiles = useMemo(() => {
         if (sourceType !== 'field-based' || !sourceFieldName || !sourceFieldValue.trim()) {
             return [];
@@ -37,7 +263,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             ? trimmedValue
             : trimmedValue.toLowerCase();
 
-        return files.filter(file =>
+        return filteredFiles.filter(file =>
             file.fields.some(field => {
                 const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
                 if (normalizedFieldName !== sourceFieldName) {
@@ -69,13 +295,13 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                 return candidateValue === normalizedFilterValue;
             })
         );
-    }, [files, sourceType, sourceFieldName, sourceFieldValue, sourceFieldCaseSensitive, prefixToRemove]);
+    }, [filteredFiles, sourceType, sourceFieldName, sourceFieldValue, sourceFieldCaseSensitive, prefixToRemove]);
 
-    // Initialize fields based on selection
+    // Initialize fields based on selection (using filtered files)
     useEffect(() => {
         let initialFields = [];
         if (sourceType === 'merged') {
-            initialFields = mergeFieldsFromFiles(files, prefixToRemove) || [];
+            initialFields = mergeFieldsFromFiles(filteredFiles, prefixToRemove) || [];
         } else if (sourceType === 'common') {
             // For common fields, we need to map them to a structure similar to merged fields
             // but only including those in comparison.commonFields
@@ -93,6 +319,23 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             // Filter files based on field selection and merge matching files
             if (filteredSourceFiles.length > 0) {
                 initialFields = mergeFieldsFromFiles(filteredSourceFiles, prefixToRemove) || [];
+            }
+        }
+
+        // For common fields, recompute comparison with filtered files if filters are active
+        // Always recompute when filters are active, even if filteredFiles is empty (to show empty result, not unfiltered fields)
+        if (sourceType === 'common' && isFilterActive) {
+            const filteredComparison = compareFields(filteredFiles, prefixToRemove);
+            if (filteredComparison && filteredComparison.commonFields && Array.isArray(filteredComparison.commonFields)) {
+                initialFields = filteredComparison.commonFields.map(f => ({
+                    ...f,
+                    enabled: true,
+                    customValue: f.textContent || '',
+                    ...(typeof f === 'string' ? { name: f, path: f, depth: 0 } : {})
+                }));
+            } else {
+                // If no common fields found (e.g., when filteredFiles is empty), set to empty array
+                initialFields = [];
             }
         }
 
@@ -120,7 +363,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         });
 
         setFields(fieldsWithState);
-    }, [sourceType, files, comparison, prefixToRemove, filteredSourceFiles]);
+    }, [sourceType, filteredFiles, comparison, prefixToRemove, filteredSourceFiles, isFilterActive]);
 
     // Ensure fields are always displayed with correct depth calculated from path
     // and sorted hierarchically (parents before children, maintaining XML order)
@@ -223,17 +466,17 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         return sortAndFlatten(rootFields);
     }, [fields]);
 
-    // Determine source files based on sourceType
+    // Determine source files based on sourceType (using filtered files)
     const sourceFiles = useMemo(() => {
         if (sourceType === 'merged') {
-            return files;
+            return filteredFiles;
         } else if (sourceType === 'common') {
-            return files; // Common fields exist in all files
+            return filteredFiles; // Common fields exist in filtered files
         } else if (sourceType === 'field-based') {
             return filteredSourceFiles;
         }
         return [];
-    }, [sourceType, files, filteredSourceFiles]);
+    }, [sourceType, filteredFiles, filteredSourceFiles]);
 
     // Compute available values for each field
     const fieldValuesMap = useMemo(() => {
@@ -259,10 +502,221 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         return valuesMap;
     }, [displayFields, sourceFiles, prefixToRemove]);
 
+    // Build name-value mapping from source files
+    // Maps each Name value to the set of Value values that appear with it in sample files
+    // Uses actual XML structure to ensure Name-Value pairs are from the same Characteristic block
+    const nameValueMapping = useMemo(() => {
+        const mapping = new Map();
+        
+        if (sourceFiles.length === 0) {
+            return mapping;
+        }
+        
+        // Scan all source files for Name-Value pairs under Characteristics > Characteristic
+        sourceFiles.forEach(file => {
+            if (!file.xmlDoc) return;
+            
+            // Traverse XML to find Characteristic elements
+            const traverse = (node) => {
+                if (node.nodeType === Node.ELEMENT_NODE) {
+                    const nodeName = node.nodeName;
+                    const normalizedName = removePrefixFromFieldName(nodeName, prefixToRemove);
+                    
+                    // Check if this is a Characteristic element
+                    if (normalizedName === 'Characteristic' || nodeName.includes('Characteristic')) {
+                        // Find Name and Value children
+                        let nameValue = null;
+                        let valueValue = null;
+                        
+                        for (let child of node.children) {
+                            if (child.nodeType === Node.ELEMENT_NODE) {
+                                const childName = removePrefixFromFieldName(child.nodeName, prefixToRemove);
+                                if (childName === 'Name' && child.textContent) {
+                                    nameValue = child.textContent.trim();
+                                } else if (childName === 'Value' && child.textContent) {
+                                    valueValue = child.textContent.trim();
+                                }
+                            }
+                        }
+                        
+                        // If we found both Name and Value, add to mapping
+                        // Store the name as-is (trimmed) so it matches what users select
+                        if (nameValue && valueValue && nameValue.length > 0 && valueValue.length > 0) {
+                            if (!mapping.has(nameValue)) {
+                                mapping.set(nameValue, new Set());
+                            }
+                            mapping.get(nameValue).add(valueValue);
+                        }
+                    }
+                    
+                    // Continue traversing
+                    for (let child of node.children) {
+                        traverse(child);
+                    }
+                }
+            };
+            
+            traverse(file.xmlDoc.documentElement);
+        });
+        
+        return mapping;
+    }, [sourceFiles, prefixToRemove]);
+
+    // Get paired values for Value field based on selected Name field
+    const getPairedValues = (valueField) => {
+        const valueFieldParentPath = valueField.parentPath || '';
+        const normalizedValueFieldParentPath = removePrefixFromPath(valueFieldParentPath, prefixToRemove);
+        
+        // Find the Name field in the SAME characteristic block as this Value field
+        // We need to find the Name that's in the same block, not just any Name with the same parentPath
+        // Since Name and Value are siblings, they share the same parentPath, but we need to find
+        // the specific Name in the same Characteristic block
+        
+        // First, find the index of the Value field in the fields array
+        const valueFieldIndex = fields.findIndex(f => f.uiId === valueField.uiId);
+        if (valueFieldIndex === -1) {
+            return [];
+        }
+        
+        // Get the block that contains this Value field
+        // But also search backwards from the Value field to find the Name field in the same Characteristic block
+        // The Name field should be a sibling of the Value field (same parentPath)
+        let nameField = null;
+        
+        // First try: search backwards from the Value field (Name usually comes before Value)
+        for (let i = valueFieldIndex; i >= 0; i--) {
+            const f = fields[i];
+            if (f.hasChildren || !f.enabled) continue;
+            
+            const normalizedFieldName = removePrefixFromFieldName(f.name, prefixToRemove);
+            const normalizedParentPath = removePrefixFromPath(f.parentPath || '', prefixToRemove);
+            
+            // If we've gone past the parent block, stop searching
+            if (normalizedParentPath !== normalizedValueFieldParentPath) {
+                break;
+            }
+            
+            // Found the Name field in the same block
+            if (normalizedFieldName === 'Name') {
+                nameField = f;
+                break;
+            }
+        }
+        
+        // If not found backwards, try forwards (shouldn't happen, but just in case)
+        if (!nameField) {
+            for (let i = valueFieldIndex + 1; i < fields.length; i++) {
+                const f = fields[i];
+                if (f.hasChildren || !f.enabled) continue;
+                
+                const normalizedFieldName = removePrefixFromFieldName(f.name, prefixToRemove);
+                const normalizedParentPath = removePrefixFromPath(f.parentPath || '', prefixToRemove);
+                
+                // If we've gone past the parent block, stop searching
+                if (normalizedParentPath !== normalizedValueFieldParentPath) {
+                    break;
+                }
+                
+                // Found the Name field in the same block
+                if (normalizedFieldName === 'Name') {
+                    nameField = f;
+                    break;
+                }
+            }
+        }
+        
+        // If Name is selected, use the name-value mapping to get paired values
+        if (nameField && nameField.customValue && nameField.customValue.trim()) {
+            const selectedName = nameField.customValue.trim();
+            
+            // Use the pre-built mapping for efficient lookup
+            if (nameValueMapping.has(selectedName)) {
+                const pairedValues = Array.from(nameValueMapping.get(selectedName));
+                return pairedValues.sort((a, b) => a.localeCompare(b));
+            }
+            
+            // Fallback: return empty array if name not found in mapping
+            return [];
+        }
+        
+        // If Name is not selected, return empty array
+        return [];
+    };
+
+    // Get filtered available values for a field (excluding values already used in sibling fields within the SAME block)
+    const getFilteredAvailableValues = (field) => {
+        let allValues;
+        
+        // Check if this is a Value field using normalized name
+        const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove);
+        
+        // If this is a Value field, get paired values based on Name selection
+        if (normalizedFieldName === 'Value') {
+            allValues = getPairedValues(field);
+            // If getPairedValues returns empty (Name not found or not in mapping),
+            // don't fall back to all values - that would show wrong values
+            // Just return empty array so dropdown doesn't show
+        } else {
+            allValues = fieldValuesMap.get(field.uiId) || [];
+        }
+        
+        // Only filter within the SAME Characteristic block (same parentPath)
+        // Values should be independent across different Characteristic blocks
+        const siblingFields = fields.filter(f => {
+            if (f.hasChildren || !f.enabled || f.uiId === field.uiId) return false;
+            if (!f.customValue || !f.customValue.trim().length) return false;
+            
+            // Use normalized names and paths for comparison
+            const normalizedFName = removePrefixFromFieldName(f.name, prefixToRemove);
+            const normalizedFieldNameForComparison = removePrefixFromFieldName(field.name, prefixToRemove);
+            const normalizedFParentPath = removePrefixFromPath(f.parentPath || '', prefixToRemove);
+            const normalizedFieldParentPath = removePrefixFromPath(field.parentPath || '', prefixToRemove);
+            
+            return normalizedFName === normalizedFieldNameForComparison &&
+                   normalizedFParentPath === normalizedFieldParentPath;
+        });
+        
+        // Get all values already used by siblings in the SAME block
+        const usedValues = new Set(
+            siblingFields.map(f => f.customValue.trim())
+        );
+        
+        // Filter out used values (only within the same block)
+        const filteredValues = allValues.filter(value => !usedValues.has(value));
+        
+        return filteredValues;
+    };
+
     const handleFieldChange = (uiId, updates) => {
-        setFields(prev => prev.map(f =>
-            f.uiId === uiId ? { ...f, ...updates } : f
-        ));
+        setFields(prev => {
+            const updatedFields = prev.map(f =>
+                f.uiId === uiId ? { ...f, ...updates } : f
+            );
+            
+            // If Name field changed, clear the Value field in the same characteristic block
+            const changedField = updatedFields.find(f => f.uiId === uiId);
+            if (changedField && changedField.name === 'Name' && updates.customValue !== undefined) {
+                // Find the Value field in the same parent block
+                const valueField = updatedFields.find(f => 
+                    f.name === 'Value' && 
+                    f.parentPath === changedField.parentPath &&
+                    f.uiId !== uiId
+                );
+                
+                if (valueField) {
+                    // Clear the Value field when Name changes
+                    const valueFieldIndex = updatedFields.findIndex(f => f.uiId === valueField.uiId);
+                    if (valueFieldIndex !== -1) {
+                        updatedFields[valueFieldIndex] = {
+                            ...updatedFields[valueFieldIndex],
+                            customValue: ''
+                        };
+                    }
+                }
+            }
+            
+            return updatedFields;
+        });
     };
 
     const updateFieldPath = (field, newParentPath, newDepth) => {
@@ -362,6 +816,15 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         
         if (blockFields.length === 0) return;
         
+        // Check if this is a Characteristic block (has Name and Value fields under Characteristic parent)
+        const isCharacteristicBlock = blockFields.some(f => {
+            const normalizedName = removePrefixFromFieldName(f.name, prefixToRemove);
+            const normalizedParentPath = removePrefixFromPath(f.parentPath || '', prefixToRemove);
+            return normalizedName === 'Name' && 
+                   normalizedParentPath.includes('Characteristic') &&
+                   !normalizedParentPath.endsWith('Characteristics');
+        });
+        
         // Find the maximum index of any field in this block within the fields array
         // This ensures we insert after the entire block
         let maxBlockIndex = -1;
@@ -378,6 +841,82 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             ...field,
             uiId: Math.random().toString(36).substr(2, 9) + '-' + Date.now()
         }));
+        
+        // If this is a Characteristic block, auto-select next unused name and clear value
+        if (isCharacteristicBlock && sourceFiles.length > 0) {
+            // Find the Name field in the duplicated block
+            const nameFieldIndex = duplicatedFields.findIndex(f => {
+                const normalizedName = removePrefixFromFieldName(f.name, prefixToRemove);
+                return normalizedName === 'Name';
+            });
+            
+            if (nameFieldIndex !== -1) {
+                const nameField = duplicatedFields[nameFieldIndex];
+                const nameFieldParentPath = nameField.parentPath || '';
+                
+                // Get all available Name values from sample files
+                const allAvailableNames = getFieldValuesFromFiles(
+                    sourceFiles,
+                    'Name',
+                    nameFieldParentPath,
+                    prefixToRemove
+                );
+                
+                // Get all currently used Name values from existing fields
+                const usedNames = new Set();
+                fields.forEach(f => {
+                    const normalizedName = removePrefixFromFieldName(f.name, prefixToRemove);
+                    const normalizedParentPath = removePrefixFromPath(f.parentPath || '', prefixToRemove);
+                    if (normalizedName === 'Name' && 
+                        normalizedParentPath === removePrefixFromPath(nameFieldParentPath, prefixToRemove) &&
+                        f.customValue && f.customValue.trim()) {
+                        usedNames.add(f.customValue.trim());
+                    }
+                });
+                
+                // Find the first unused name (or next in sequence)
+                let nextName = '';
+                for (const availableName of allAvailableNames) {
+                    if (!usedNames.has(availableName)) {
+                        nextName = availableName;
+                        break;
+                    }
+                }
+                
+                // If all names are used, use the first available name anyway
+                if (!nextName && allAvailableNames.length > 0) {
+                    nextName = allAvailableNames[0];
+                }
+                
+                // Update the Name field with the next unused name
+                duplicatedFields[nameFieldIndex] = {
+                    ...duplicatedFields[nameFieldIndex],
+                    customValue: nextName
+                };
+                
+                // Find and prefill the Value field in the duplicated block
+                const valueFieldIndex = duplicatedFields.findIndex(f => {
+                    const normalizedName = removePrefixFromFieldName(f.name, prefixToRemove);
+                    return normalizedName === 'Value';
+                });
+                
+                if (valueFieldIndex !== -1 && nextName) {
+                    // Get the first available value for this name from the mapping
+                    let prefilledValue = '';
+                    if (nameValueMapping.has(nextName)) {
+                        const availableValues = Array.from(nameValueMapping.get(nextName));
+                        if (availableValues.length > 0) {
+                            prefilledValue = availableValues[0]; // Use first available value
+                        }
+                    }
+                    
+                    duplicatedFields[valueFieldIndex] = {
+                        ...duplicatedFields[valueFieldIndex],
+                        customValue: prefilledValue
+                    };
+                }
+            }
+        }
 
         // Insert the duplicated block right after the original block
         setFields(prev => {
@@ -570,6 +1109,17 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
             pathMap.set(field.uiId, node);
         });
 
+        // Helper function to escape XML text content
+        const escapeXML = (text) => {
+            if (!text) return '';
+            return String(text)
+                .replace(/&(?!amp;|lt;|gt;|quot;|apos;)/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&apos;');
+        };
+
         // Recursive function to build XML string
         const buildXMLString = (node, indentLevel = 0) => {
             const indent = '  '.repeat(indentLevel);
@@ -589,7 +1139,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                     xml += `${indent}</${child.name}>\n`;
                 } else {
                     if (child.text) {
-                        xml += `${child.text}`;
+                        xml += escapeXML(child.text);
                     }
                     xml += `</${child.name}>\n`;
                 }
@@ -607,7 +1157,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'generated.xml';
+        a.download = getGeneratedFilename();
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -617,8 +1167,13 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
     const [selectedFieldId, setSelectedFieldId] = useState(null);
     const [draggedItemIndex, setDraggedItemIndex] = useState(null);
     const [activeTab, setActiveTab] = useState('config'); // 'config' or 'preview'
-
-    // ... (existing code) ...
+    const [openDropdownFieldId, setOpenDropdownFieldId] = useState(null); // Track which field's dropdown is open
+    
+    // Format Helper state
+    const [isFormatHelperExpanded, setIsFormatHelperExpanded] = useState(true);
+    const [generatedDateTime, setGeneratedDateTime] = useState(null);
+    const [copyFeedback, setCopyFeedback] = useState(null);
+    const [enableFilenameGeneration, setEnableFilenameGeneration] = useState(false);
 
     const handleKeyDown = (e) => {
         if (!selectedFieldId) return;
@@ -711,6 +1266,271 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
         });
 
         setDraggedItemIndex(null);
+    };
+
+    // Format Helper Functions
+    const getWorkOrderNumber = () => {
+        const workOrderField = fields.find(field => 
+            removePrefixFromFieldName(field.name, prefixToRemove)
+                .toLowerCase() === 'workordernumber'
+        );
+        return workOrderField?.customValue || '';
+    };
+
+    // Remove leading zeros from WorkOrderNumber
+    const getWorkOrderNumberWithoutLeadingZeros = () => {
+        const workOrderNumber = getWorkOrderNumber();
+        if (!workOrderNumber) return '';
+        // Remove all leading zeros, but keep at least one digit if the entire value is zeros
+        const cleaned = workOrderNumber.replace(/^0+/, '');
+        return cleaned || '0';
+    };
+
+    const handleWorkOrderNumberChange = (newValue) => {
+        const workOrderField = fields.find(field => 
+            removePrefixFromFieldName(field.name, prefixToRemove)
+                .toLowerCase() === 'workordernumber'
+        );
+        if (workOrderField) {
+            handleFieldChange(workOrderField.uiId, { customValue: newValue });
+        }
+    };
+
+    const handleDateTimeChange = (newIsoValue) => {
+        // Allow typing freely, but validate format when complete
+        // Parse the ISO format: YYYY-MM-DDTHH:MM:SS
+        const match = newIsoValue.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
+        
+        if (match) {
+            // Valid format - update stored DateTime with parsed values
+            const [, year, month, day, hours, minutes, seconds] = match;
+            const date = `${year}${month}${day}`;
+            const time = `${hours}${minutes}${seconds}`;
+            
+            setGeneratedDateTime({ iso: newIsoValue, date, time });
+        } else {
+            // Invalid format - still update the ISO value for display, but keep old date/time if available
+            // This allows users to type freely without errors
+            setGeneratedDateTime(prev => {
+                if (prev) {
+                    return { ...prev, iso: newIsoValue };
+                } else {
+                    // If no previous value, create a placeholder (will be validated on blur)
+                    return { iso: newIsoValue, date: '', time: '' };
+                }
+            });
+        }
+    };
+
+    const handleDateTimeBlur = () => {
+        // Validate format on blur
+        if (generatedDateTime && generatedDateTime.iso) {
+            const match = generatedDateTime.iso.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
+            if (!match) {
+                alert('Invalid DateTime format. Please use YYYY-MM-DDTHH:MM:SS format (e.g., 2024-10-07T11:52:43)');
+                // If we have valid date/time from before, restore the ISO to match them
+                if (generatedDateTime.date && generatedDateTime.time) {
+                    const date = generatedDateTime.date;
+                    const time = generatedDateTime.time;
+                    const iso = `${date.substring(0,4)}-${date.substring(4,6)}-${date.substring(6,8)}T${time.substring(0,2)}:${time.substring(2,4)}:${time.substring(4,6)}`;
+                    setGeneratedDateTime({ iso, date, time });
+                } else {
+                    // No valid previous value, regenerate
+                    handleGenerateDateTime();
+                }
+            }
+        }
+    };
+
+    const copyToClipboard = (text, label) => {
+        navigator.clipboard.writeText(text)
+            .then(() => {
+                setCopyFeedback({ label, value: text });
+                setTimeout(() => setCopyFeedback(null), 2000);
+            })
+            .catch(err => {
+                alert('Failed to copy to clipboard: ' + err.message);
+            });
+    };
+
+    const handleGenerateDateTime = () => {
+        const now = new Date();
+        
+        // Format: YYYY-MM-DDTHH:MM:SS
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        
+        const iso = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+        const date = `${year}${month}${day}`;
+        const time = `${hours}${minutes}${seconds}`;
+        
+        const dateTimeObj = { iso, date, time };
+        setGeneratedDateTime(dateTimeObj);
+        copyToClipboard(iso, 'DateTime');
+    };
+
+    const isDateTimeValid = () => {
+        return generatedDateTime && 
+               generatedDateTime.date && 
+               generatedDateTime.time && 
+               generatedDateTime.date.length === 8 && 
+               generatedDateTime.time.length === 6;
+    };
+
+    const handleGenerateEventID = () => {
+        if (!isDateTimeValid()) {
+            alert('Please generate a valid DateTime first by clicking the DateTime button, or ensure the DateTime format is correct (YYYY-MM-DDTHH:MM:SS).');
+            return;
+        }
+        
+        const workOrderNumber = getWorkOrderNumberWithoutLeadingZeros();
+        if (!workOrderNumber) {
+            alert('WorkOrderNumber field not found or is empty. Please add and fill the WorkOrderNumber field in your configuration.');
+            return;
+        }
+        
+        // Format: 0000{WorkOrderNumber}-YYYYMMDD-HHMMSS
+        // WorkOrderNumber has leading zeros removed before adding 0000 prefix
+        const eventID = `0000${workOrderNumber}-${generatedDateTime.date}-${generatedDateTime.time}`;
+        copyToClipboard(eventID, 'EventID');
+    };
+
+    // Extract last 3 digits from filtered filenames
+    const getLastThreeDigitsFromFiles = () => {
+        if (!filteredFiles || filteredFiles.length === 0) return '';
+        
+        // Extract all digits from filtered filenames
+        const allDigits = filteredFiles
+            .map(file => file.filename || '')
+            .join('')
+            .match(/\d/g);
+        
+        if (!allDigits || allDigits.length === 0) return '';
+        
+        // Take the last 3 digits
+        return allDigits.slice(-3).join('');
+    };
+
+    // Generate filename: SAP_E_OME_WO_{EventID}_{last3digits}
+    const generateFilename = () => {
+        if (!isDateTimeValid()) {
+            alert('Please generate a valid DateTime first by clicking the DateTime button, or ensure the DateTime format is correct (YYYY-MM-DDTHH:MM:SS).');
+            return;
+        }
+        
+        const workOrderNumber = getWorkOrderNumberWithoutLeadingZeros();
+        if (!workOrderNumber) {
+            alert('WorkOrderNumber field not found or is empty. Please add and fill the WorkOrderNumber field in your configuration.');
+            return;
+        }
+        
+        // WorkOrderNumber has leading zeros removed before adding 0000 prefix
+        const eventID = `0000${workOrderNumber}-${generatedDateTime.date}-${generatedDateTime.time}`;
+        const lastThreeDigits = getLastThreeDigitsFromFiles();
+        
+        if (!lastThreeDigits) {
+            alert('Could not extract digits from filenames. Please ensure your files have numeric characters in their names.');
+            return;
+        }
+        
+        const filename = `SAP_E_OME_WO_${eventID}_${lastThreeDigits}`;
+        copyToClipboard(filename, 'Filename');
+    };
+
+    // Find field by name (case-insensitive, handles variations)
+    const findFieldByName = (fieldName) => {
+        const normalizedName = fieldName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return fields.find(field => {
+            const normalizedFieldName = removePrefixFromFieldName(field.name, prefixToRemove)
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, '');
+            return normalizedFieldName === normalizedName;
+        });
+    };
+
+    // Generate all: DateTime, EventID, and auto-populate fields
+    const handleGenerateAll = () => {
+        // Check WorkOrderNumber first
+        const workOrderNumber = getWorkOrderNumberWithoutLeadingZeros();
+        if (!workOrderNumber) {
+            alert('WorkOrderNumber field not found or is empty. Please add and fill the WorkOrderNumber field in your configuration.');
+            return;
+        }
+
+        // Generate DateTime
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        
+        const iso = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+        const date = `${year}${month}${day}`;
+        const time = `${hours}${minutes}${seconds}`;
+        
+        const dateTimeObj = { iso, date, time };
+        setGeneratedDateTime(dateTimeObj);
+
+        // Generate EventID
+        const eventID = `0000${workOrderNumber}-${date}-${time}`;
+
+        // Auto-populate EventDateandTime field
+        const eventDateField = findFieldByName('EventDateandTime') || 
+                              findFieldByName('EventDateAndTime') ||
+                              findFieldByName('EventDateandtime');
+        if (eventDateField) {
+            handleFieldChange(eventDateField.uiId, { customValue: iso });
+        }
+
+        // Auto-populate EventID field
+        const eventIDField = findFieldByName('EventID') || findFieldByName('EventId');
+        if (eventIDField) {
+            handleFieldChange(eventIDField.uiId, { customValue: eventID });
+        }
+
+        // Show feedback message
+        const filledFields = [];
+        if (eventDateField) filledFields.push('EventDateandTime');
+        if (eventIDField) filledFields.push('EventID');
+        
+        let feedbackMessage = 'Generated';
+        if (filledFields.length > 0) {
+            feedbackMessage = `Auto-filled: ${filledFields.join(', ')}`;
+        }
+
+        // Enable SAP filename generation by default when Generate All is clicked
+        setEnableFilenameGeneration(true);
+        
+        // Generate and copy SAP filename
+        const lastThreeDigits = getLastThreeDigitsFromFiles();
+        if (lastThreeDigits) {
+            const filename = `SAP_E_OME_WO_${eventID}_${lastThreeDigits}`;
+            copyToClipboard(filename, feedbackMessage);
+        } else {
+            copyToClipboard(eventID, feedbackMessage);
+        }
+    };
+
+    const getGeneratedFilename = () => {
+        if (!enableFilenameGeneration) return 'generated.xml';
+        
+        if (!isDateTimeValid()) return 'generated.xml';
+        
+        const workOrderNumber = getWorkOrderNumberWithoutLeadingZeros();
+        if (!workOrderNumber) return 'generated.xml';
+        
+        const lastThreeDigits = getLastThreeDigitsFromFiles();
+        if (!lastThreeDigits) return 'generated.xml';
+        
+        // WorkOrderNumber has leading zeros removed before adding 0000 prefix
+        const eventID = `0000${workOrderNumber}-${generatedDateTime.date}-${generatedDateTime.time}`;
+        return `SAP_E_OME_WO_${eventID}_${lastThreeDigits}.xml`;
     };
 
     return (
@@ -810,9 +1630,150 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
 
             <div className="generator-content">
                 {activeTab === 'config' && (
-                    <div className="fields-editor full-width">
-                        <h3>Field Configuration <span style={{ fontSize: '0.8em', fontWeight: 'normal', color: '#666' }}>(Drag to reorder, Cmd+Arrows to move/indent)</span></h3>
-                        <div className="fields-list-container">
+                    <>
+                        {/* Format Helper Section */}
+                        <div className="format-helper-section">
+                            <div 
+                                className="format-helper-header"
+                                onClick={() => setIsFormatHelperExpanded(!isFormatHelperExpanded)}
+                            >
+                                <span className="format-helper-chevron">{isFormatHelperExpanded ? '▼' : '▶'}</span>
+                                <h3>Format Helpers</h3>
+                            </div>
+                            
+                            {isFormatHelperExpanded && (
+                                <div className="format-helper-content">
+                                    <div className="format-helper-info">
+                                        <div className="format-info-row">
+                                            <span className="format-label">WorkOrderNumber:</span>
+                                            <input
+                                                type="text"
+                                                className="format-value-input"
+                                                value={getWorkOrderNumber()}
+                                                onChange={(e) => handleWorkOrderNumberChange(e.target.value)}
+                                                placeholder="(not set)"
+                                            />
+                                        </div>
+                                        {generatedDateTime && (
+                                            <div className="format-info-row">
+                                                <span className="format-label">Stored DateTime:</span>
+                                                <input
+                                                    type="text"
+                                                    className="format-value-input"
+                                                    value={generatedDateTime.iso}
+                                                    onChange={(e) => handleDateTimeChange(e.target.value)}
+                                                    onBlur={handleDateTimeBlur}
+                                                    placeholder="YYYY-MM-DDTHH:MM:SS"
+                                                />
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    <div className="format-helper-buttons">
+                                        <button 
+                                            className="format-btn generate-all-btn"
+                                            onClick={handleGenerateAll}
+                                            disabled={!getWorkOrderNumber()}
+                                            title={getWorkOrderNumber() ? "Generate DateTime, EventID, and auto-populate fields" : "Set WorkOrderNumber first"}
+                                            style={{
+                                                backgroundColor: getWorkOrderNumber() ? 'var(--primary-color)' : 'var(--text-light)',
+                                                color: '#ffffff',
+                                                borderColor: getWorkOrderNumber() ? 'var(--primary-color)' : 'var(--text-light)',
+                                                fontWeight: '600',
+                                                fontSize: '0.875rem',
+                                                padding: '0.625rem 1rem'
+                                            }}
+                                        >
+                                            <span className="format-btn-icon" style={{ fontSize: '1.25rem', color: '#ffffff' }}>⚡</span>
+                                            <div className="format-btn-content">
+                                                <span className="format-btn-label" style={{ color: '#ffffff', fontWeight: '700' }}>Generate All & Auto-Fill</span>
+                                                <span className="format-btn-example" style={{ color: 'rgba(255, 255, 255, 0.9)', fontSize: '0.75rem' }}>Auto-populates EventDateandTime and EventID fields</span>
+                                            </div>
+                                        </button>
+                                        
+                                        <button 
+                                            className="format-btn datetime-btn"
+                                            onClick={handleGenerateDateTime}
+                                            title="Generate current timestamp and copy to clipboard"
+                                        >
+                                            <span className="format-btn-icon">📅</span>
+                                            <div className="format-btn-content">
+                                                <span className="format-btn-label">DateTime</span>
+                                                <span className="format-btn-example">e.g., 2024-10-07T11:52:43</span>
+                                            </div>
+                                        </button>
+                                        
+                                        <button 
+                                            className="format-btn eventid-btn"
+                                            onClick={handleGenerateEventID}
+                                            disabled={!isDateTimeValid()}
+                                            title={isDateTimeValid() ? "Generate EventID using stored DateTime and copy to clipboard" : "Generate valid DateTime first"}
+                                        >
+                                            <span className="format-btn-icon">🔖</span>
+                                            <div className="format-btn-content">
+                                                <span className="format-btn-label">EventID</span>
+                                                <span className="format-btn-example">e.g., 000086307211-20241007-115243</span>
+                                            </div>
+                                        </button>
+                                    </div>
+                                    
+                                    {/* Filename Generation Toggle */}
+                                    <div className="filename-generation-section">
+                                        <label className="filename-toggle-label">
+                                            <input
+                                                type="checkbox"
+                                                checked={enableFilenameGeneration}
+                                                onChange={(e) => setEnableFilenameGeneration(e.target.checked)}
+                                            />
+                                            <span>Generate SAP filename</span>
+                                        </label>
+                                        
+                                        {enableFilenameGeneration && (
+                                            <div className="filename-display">
+                                                {isDateTimeValid() && getWorkOrderNumber() && getLastThreeDigitsFromFiles() ? (
+                                                    <>
+                                                        <div className="filename-preview">
+                                                            <span className="filename-label">Filename:</span>
+                                                            <code className="filename-value">
+                                                                SAP_E_OME_WO_{`0000${getWorkOrderNumberWithoutLeadingZeros()}-${generatedDateTime.date}-${generatedDateTime.time}`}_{getLastThreeDigitsFromFiles()}
+                                                            </code>
+                                                        </div>
+                                                        <button
+                                                            className="format-btn filename-btn"
+                                                            onClick={generateFilename}
+                                                            title="Copy filename to clipboard"
+                                                            style={{ alignSelf: 'flex-start' }}
+                                                        >
+                                                            <span className="format-btn-icon">📄</span>
+                                                            <div className="format-btn-content">
+                                                                <span className="format-btn-label">Copy Filename</span>
+                                                                <span className="format-btn-example">SAP_E_OME_WO_*EventID*_*last3digits*</span>
+                                                            </div>
+                                                        </button>
+                                                    </>
+                                                ) : (
+                                                    <div className="filename-warning">
+                                                        {!isDateTimeValid() && 'Generate valid DateTime first. '}
+                                                        {!getWorkOrderNumber() && 'Set WorkOrderNumber field. '}
+                                                        {!getLastThreeDigitsFromFiles() && 'Load files with digits in filenames.'}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                    
+                                    {copyFeedback && (
+                                        <div className="copy-feedback">
+                                            ✓ Copied {copyFeedback.label}: <code>{copyFeedback.value}</code>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                        
+                        <div className="fields-editor full-width">
+                            <h3>Field Configuration <span style={{ fontSize: '0.8em', fontWeight: 'normal', color: '#666' }}>(Drag to reorder, Cmd+Arrows to move/indent)</span></h3>
+                            <div className="fields-list-container">
                             {sourceType === 'field-based' && (!sourceFieldName || !sourceFieldValue.trim()) && (
                                 <div style={{ padding: '1rem', backgroundColor: '#fef3c7', border: '1px solid #fbbf24', borderRadius: '0.5rem', marginBottom: '1rem', color: '#92400e' }}>
                                     Please select a field and enter a value above to filter source files.
@@ -844,7 +1805,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                                         onClick={() => setSelectedFieldId(field.uiId)}
                                     >
                                         <div className="field-row">
-                                            <div className="drag-handle" style={{ cursor: 'grab', marginRight: '10px', color: '#ccc' }}>
+                                            <div className="drag-handle" style={{ cursor: 'grab', color: '#ccc', display: 'flex', alignItems: 'center', justifyContent: 'center', gridColumn: '1' }}>
                                                 ☰
                                             </div>
                                             <button
@@ -867,9 +1828,9 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                                                     color: 'var(--text-secondary)',
                                                     fontSize: '0.75rem',
                                                     padding: 0,
-                                                    marginRight: '0.25rem',
                                                     transition: 'all 0.2s',
-                                                    flexShrink: 0
+                                                    gridColumn: '2',
+                                                    justifySelf: 'start'
                                                 }}
                                                 onMouseEnter={(e) => {
                                                     e.target.style.backgroundColor = 'var(--bg-color)';
@@ -906,9 +1867,9 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                                                     color: 'var(--text-secondary)',
                                                     fontSize: '0.75rem',
                                                     padding: 0,
-                                                    marginRight: '0.5rem',
                                                     transition: 'all 0.2s',
-                                                    flexShrink: 0
+                                                    gridColumn: '3',
+                                                    justifySelf: 'start'
                                                 }}
                                                 onMouseEnter={(e) => {
                                                     e.target.style.backgroundColor = '#fee2e2';
@@ -923,44 +1884,31 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                                             >
                                                 ×
                                             </button>
-                                            <label className="field-label">
+                                            <label className="field-label" style={{ gridColumn: '4', minWidth: 0, maxWidth: '100%' }}>
                                                 <input
                                                     type="checkbox"
                                                     checked={field.enabled}
                                                     onChange={(e) => handleFieldChange(field.uiId, { enabled: e.target.checked })}
+                                                    style={{ flexShrink: 0 }}
                                                 />
                                                 <span className="field-name">{removePrefixFromFieldName(field.name, prefixToRemove)}</span>
                                             </label>
                                             {!field.hasChildren && (() => {
-                                                const availableValues = fieldValuesMap.get(field.uiId) || [];
+                                                const availableValues = getFilteredAvailableValues(field);
+                                                const allValues = fieldValuesMap.get(field.uiId) || [];
                                                 const valuesCount = availableValues.length;
-                                                const datalistId = `datalist-${field.uiId}`;
+                                                const allValuesCount = allValues.length;
                                                 
                                                 return (
-                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                        <input
-                                                            type="text"
-                                                            className="field-value-input"
-                                                            value={field.customValue || ''}
-                                                            onChange={(e) => handleFieldChange(field.uiId, { customValue: e.target.value })}
-                                                            placeholder="Value"
-                                                            disabled={!field.enabled}
-                                                            onClick={(e) => e.stopPropagation()} // Prevent selecting row when clicking input
-                                                            list={valuesCount > 0 ? datalistId : undefined}
-                                                        />
-                                                        {valuesCount > 0 && (
-                                                            <span className="field-value-count" title={`${valuesCount} value${valuesCount === 1 ? '' : 's'} available`}>
-                                                                {valuesCount} value{valuesCount === 1 ? '' : 's'}
-                                                            </span>
-                                                        )}
-                                                        {valuesCount > 0 && (
-                                                            <datalist id={datalistId}>
-                                                                {availableValues.map((value, idx) => (
-                                                                    <option key={idx} value={value} />
-                                                                ))}
-                                                            </datalist>
-                                                        )}
-                                                    </div>
+                                                    <FieldValueInput
+                                                        field={field}
+                                                        availableValues={availableValues}
+                                                        allValuesCount={allValuesCount}
+                                                        valuesCount={valuesCount}
+                                                        onFieldChange={handleFieldChange}
+                                                        openDropdownFieldId={openDropdownFieldId}
+                                                        setOpenDropdownFieldId={setOpenDropdownFieldId}
+                                                    />
                                                 );
                                             })()}
                                         </div>
@@ -970,6 +1918,7 @@ function GeneratorView({ files, comparison, prefixToRemove = '' }) {
                             </ul>
                         </div>
                     </div>
+                    </>
                 )}
 
                 {activeTab === 'preview' && (
